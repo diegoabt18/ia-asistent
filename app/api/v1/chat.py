@@ -16,10 +16,19 @@ async def chat(
     payload: ChatRequest,
     assistant: AssistantService = Depends(get_assistant_service),
 ) -> ChatResponse:
-    conversation_id, text = await assistant.reply(
-        payload.message, payload.conversation_id, payload.temperature, payload.max_tokens
+    result = await assistant.reply(
+        payload.message,
+        payload.conversation_id,
+        payload.temperature,
+        payload.max_tokens,
+        use_web=payload.use_web,
     )
-    return ChatResponse(conversation_id=conversation_id, model=assistant.model, response=text)
+    return ChatResponse(
+        conversation_id=result.conversation_id,
+        model=assistant.model,
+        response=result.text,
+        sources=result.sources,
+    )
 
 
 async def _to_sse(events: AsyncIterator[tuple[str, dict]]) -> AsyncIterator[str]:
@@ -36,7 +45,11 @@ async def chat_stream(
     if payload.conversation_id is not None:
         await assistant.validate_conversation(payload.conversation_id)
     events = assistant.stream_reply(
-        payload.message, payload.conversation_id, payload.temperature, payload.max_tokens
+        payload.message,
+        payload.conversation_id,
+        payload.temperature,
+        payload.max_tokens,
+        use_web=payload.use_web,
     )
     return StreamingResponse(
         _to_sse(events),

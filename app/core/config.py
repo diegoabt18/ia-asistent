@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     chat_history_messages: int = 12
     chat_max_context_chars: int = 6000
 
+    # Investigación web: cuántas páginas leer, cuánto texto de cada una y límites de descarga.
+    research_max_sources: int = 4
+    research_page_max_chars: int = 1500
+    research_fetch_concurrency: int = 3
+    research_fetch_timeout_seconds: float = 10.0
+    research_max_page_bytes: int = 2_000_000
+
     searxng_base_url: str = "http://127.0.0.1:7080"
     searxng_timeout_seconds: float = 20.0
 
