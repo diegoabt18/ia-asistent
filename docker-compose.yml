@@ -1,0 +1,13 @@
+services:
+  api:
+    build: .
+    container_name: local-ai-assistant-api
+    # Host network: la API llega a Ollama, SearXNG y Redis en 127.0.0.1 del servidor.
+    # Requiere Linux. Solo funciona con los servicios que escuchan en localhost.
+    network_mode: host
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+
+# Redis, SearXNG y Ollama NO se definen aquí: ya existen en el servidor.
