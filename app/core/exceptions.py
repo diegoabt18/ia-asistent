@@ -5,3 +5,9 @@ class UpstreamServiceError(Exception):
         self.service = service
         self.detail = detail
         super().__init__(f"{service}: {detail}")
+
+
+class ConversationNotFoundError(Exception):
+    def __init__(self, conversation_id: str) -> None:
+        self.conversation_id = conversation_id
+        super().__init__(f"Conversación no encontrada: {conversation_id}")

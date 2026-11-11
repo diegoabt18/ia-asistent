@@ -11,7 +11,8 @@ RUN pip install -r requirements.txt
 
 COPY app ./app
 
-RUN useradd --create-home appuser
+# UID fijo para que coincida con el dueño de ./data en el host (ver README).
+RUN useradd --uid 1000 --create-home appuser
 USER appuser
 
 # Con network_mode: host (ver docker-compose.yml) API_PORT se abre directamente en el host.

@@ -13,9 +13,16 @@ class Settings(BaseSettings):
     api_key: str = ""
     cors_origins: list[str] = []
 
+    database_url: str = "sqlite:///./data/assistant.db"
+
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen2.5:1.5b-instruct-q4_K_M"
     ollama_timeout_seconds: float = 120.0
+
+    # Historial enviado al modelo: pocos mensajes y límite de caracteres, para no exceder
+    # el contexto de un modelo pequeño (4096 tokens por defecto en Ollama).
+    chat_history_messages: int = 12
+    chat_max_context_chars: int = 6000
 
     searxng_base_url: str = "http://127.0.0.1:7080"
     searxng_timeout_seconds: float = 20.0
