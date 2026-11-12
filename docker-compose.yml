@@ -2,12 +2,25 @@ services:
   api:
     build: .
     container_name: local-ai-assistant-api
-    # Host network: la API llega a Ollama, SearXNG y Redis en 127.0.0.1 del servidor.
-    # Requiere Linux. Solo funciona con los servicios que escuchan en localhost.
-    network_mode: host
+    # Sin network_mode: host. La API se une a las redes de Docker de los servicios que usa:
+    #   - server_lumia-network: Redis del servidor (server-redis-1)
+    #   - searxng_default:      SearXNG (searxng-core)
+    # Ollama sigue en el host (systemd), accesible en la IP del puente server_lumia-network.
     env_file: .env
+    environment:
+      # Escuchar en todas las interfaces DENTRO del contenedor (no se publica ningún puerto).
+      API_HOST: "0.0.0.0"
+    networks:
+      - lumia
+      - searxng
     restart: unless-stopped
     volumes:
       - ./data:/app/data
 
-# Redis, SearXNG y Ollama NO se definen aquí: ya existen en el servidor.
+networks:
+  lumia:
+    name: server_lumia-network
+    external: true
+  searxng:
+    name: searxng_default
+    external: true
