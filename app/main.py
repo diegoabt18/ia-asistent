@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -28,6 +29,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.http = httpx.AsyncClient()
     app.state.redis = create_redis_client(settings)
     app.state.session_factory = session_factory
+    # Límite compartido por todas las peticiones: los servicios se crean por petición.
+    app.state.verify_slots = asyncio.Semaphore(max(1, settings.verification_max_concurrent))
     try:
         yield
     finally:

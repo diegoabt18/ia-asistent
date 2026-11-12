@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 
 from app.schemas.research import ResearchSource
+from app.schemas.verification import VerificationOut
 
 
 class ChatRequest(BaseModel):
@@ -18,3 +19,5 @@ class ChatResponse(BaseModel):
     model: str
     response: str
     sources: list[ResearchSource] = Field(default_factory=list)
+    # Solo se rellena cuando use_web es true.
+    verification: VerificationOut | None = None

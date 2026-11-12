@@ -24,12 +24,35 @@ class Settings(BaseSettings):
     chat_history_messages: int = 12
     chat_max_context_chars: int = 6000
 
-    # Investigación web: cuántas páginas leer, cuánto texto de cada una y límites de descarga.
+    # Investigación web: cuántas páginas leer, cuánto texto guardar de cada una y límites de descarga.
     research_max_sources: int = 4
-    research_page_max_chars: int = 1500
+    # Texto extraído máximo por página (memoria). La verificación recorre todo este texto por fragmentos.
+    research_page_max_chars: int = 20000
+    # Texto por fuente que se envía al modelo (solo los fragmentos más relevantes para la pregunta).
+    research_context_max_chars: int = 6000
     research_fetch_concurrency: int = 3
     research_fetch_timeout_seconds: float = 10.0
     research_max_page_bytes: int = 2_000_000
+
+    # Consultas: la pregunta original más alternativas por plantilla, hasta este total.
+    research_max_queries: int = 4
+
+    # Fragmentación de evidencia (sin modelos).
+    evidence_fragment_chars: int = 800
+    evidence_fragment_overlap_chars: int = 120
+    evidence_max_fragments_per_source: int = 40
+    # Fragmentos candidatos por afirmación.
+    evidence_max_fragments_per_claim: int = 3
+
+    # Verificación determinística (sin usar el modelo para decidir).
+    verification_support_threshold: float = 0.6
+    verification_contradiction_threshold: float = 0.6
+    verification_min_independent_sources: int = 1
+    verification_detect_contradictions: bool = True
+    # Tiempo máximo de contraste por respuesta. Lo que no da tiempo a verificar queda sin respaldo.
+    verification_max_seconds: float = 20.0
+    # Verificaciones que pueden ejecutarse a la vez en el proceso (CPU). Evita saturar el servidor.
+    verification_max_concurrent: int = 2
 
     searxng_base_url: str = "http://127.0.0.1:7080"
     searxng_timeout_seconds: float = 20.0

@@ -8,6 +8,7 @@ import httpx
 import trafilatura
 
 from app.core.config import Settings
+from app.services.text_analysis import clean_page_text
 from app.services.url_guard import UnsafeUrlError, assert_public_http_url
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ def extract_document(html: str, url: str, max_chars: int) -> PageDocument | None
     if not raw:
         return None
     data = json.loads(raw)
-    text = " ".join((data.get("text") or "").split())
+    text = clean_page_text(data.get("text") or "")
     if len(text) < MIN_TEXT_CHARS:
         return None
     domain = urlsplit(url).hostname or url

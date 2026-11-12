@@ -10,9 +10,9 @@ from app.prompts.research_prompts import format_sources, research_system_prompt
 from app.prompts.system_prompts import SYSTEM_PROMPT
 from app.repositories.conversation_repository import ConversationRepository
 from app.schemas.research import ResearchSource
-from app.services.citations import validate_citations
 from app.services.ollama_service import OllamaService
 from app.services.research_service import ResearchService, to_sources
+from app.services.verification_service import VerificationResult, to_schema
 from app.services.web_extraction_service import PageDocument
 
 
@@ -51,10 +51,11 @@ class ChatResult:
     conversation_id: str
     text: str
     sources: list[ResearchSource]
+    verification: VerificationResult | None = None
 
 
 class AssistantService:
-    """Coordina historial, investigación opcional y modelo.
+    """Coordina historial, investigación opcional, verificación y modelo.
 
     Un turno solo se guarda cuando el modelo respondió correctamente.
     """
@@ -87,9 +88,10 @@ class AssistantService:
         system_prompt = SYSTEM_PROMPT
         user_content = message
         if use_web:
-            documents = await self._research.gather(message)
+            documents = (await self._research.gather(message)).documents
             system_prompt = research_system_prompt(date.today())
-            sources = format_sources(documents) or "(ninguna fuente pudo leerse)"
+            prompt_docs = self._research.context_for(message, documents)
+            sources = format_sources(prompt_docs) or "(ninguna fuente pudo leerse)"
             user_content = f"Fuentes:\n{sources}\n\nPregunta: {message}"
 
         history: list[tuple[str, str]] = []
@@ -118,12 +120,17 @@ class AssistantService:
         messages, documents = await self._prepare(conversation_id, message, use_web)
 
         raw = await self._ollama.chat(messages, temperature, max_tokens)
-        text, cited = validate_citations(raw, len(documents)) if use_web else (raw, [])
+        if use_web:
+            verification = await self._research.verify_limited(raw, documents)
+            text = verification.answer
+            sources = to_sources(documents, verification.valid_source_indices)
+        else:
+            verification, text, sources = None, raw, []
+
         await asyncio.to_thread(
             self._repo.add_exchange, conv_id, message, text, title_from(message)
         )
-        sources = to_sources(documents, cited) if use_web else []
-        return ChatResult(conversation_id=conv_id, text=text, sources=sources)
+        return ChatResult(conversation_id=conv_id, text=text, sources=sources, verification=verification)
 
     async def stream_reply(
         self,
@@ -135,8 +142,8 @@ class AssistantService:
     ) -> AsyncIterator[tuple[str, dict]]:
         """Emite eventos (evento, datos). Si el cliente se desconecta, no se guarda el turno.
 
-        Nota: los tokens se envían tal cual los genera el modelo. Las citas no válidas se
-        eliminan solo del texto guardado y del evento `done`.
+        Nota: los tokens se envían tal cual los genera el modelo. La verificación se calcula
+        al final; el texto guardado y el evento `done` llevan las citas ya validadas.
         """
         conv_id = conversation_id or str(uuid.uuid4())
         yield "start", {"conversation_id": conv_id}
@@ -155,12 +162,20 @@ class AssistantService:
             return
 
         raw = "".join(parts)
-        text, cited = validate_citations(raw, len(documents)) if use_web else (raw, [])
+        if use_web:
+            verification = await self._research.verify_limited(raw, documents)
+            text = verification.answer
+            sources = to_sources(documents, verification.valid_source_indices)
+        else:
+            verification, text, sources = None, raw, []
+
         await asyncio.to_thread(
             self._repo.add_exchange, conv_id, message, text, title_from(message)
         )
-        sources = to_sources(documents, cited) if use_web else []
-        yield "done", {
+        done: dict = {
             "conversation_id": conv_id,
             "sources": [s.model_dump() for s in sources],
         }
+        if verification is not None:
+            done["verification"] = to_schema(verification).model_dump()
+        yield "done", done

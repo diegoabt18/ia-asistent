@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from app.core.dependencies import get_assistant_service
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.services.assistant_service import AssistantService
+from app.services.verification_service import to_schema
 
 router = APIRouter(tags=["chat"])
 
@@ -28,6 +29,7 @@ async def chat(
         model=assistant.model,
         response=result.text,
         sources=result.sources,
+        verification=to_schema(result.verification) if result.verification else None,
     )
 
 

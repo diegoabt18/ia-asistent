@@ -26,6 +26,7 @@ def get_research_service(request: Request) -> ResearchService:
         SearchService(state.settings, state.http),
         OllamaService(state.settings, state.http),
         state.http,
+        verify_slots=state.verify_slots,
     )
 
 

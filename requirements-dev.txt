@@ -1,0 +1,4 @@
+# Dependencias de desarrollo y pruebas. No se instalan en la imagen Docker.
+-r requirements.txt
+pytest==8.3.4
+pytest-asyncio==0.24.0

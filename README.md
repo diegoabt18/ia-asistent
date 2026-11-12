@@ -103,10 +103,74 @@ Cada fuente devuelve `title`, `url`, `domain`, `category` (`oficial`, `referenci
 - Cada redirección se valida de nuevo; máximo 3 redirecciones.
 - Se descargan como máximo 2 MB por página, con timeout de 10 s.
 
+## Verificación de respuestas (Fase 3b)
+
+La verificación la hace el backend con reglas deterministas. El modelo solo redacta la respuesta; no decide si está verificada.
+
+1. **Consultas alternativas** (`QueryGenerator`): la pregunta original siempre va primero. Después se añaden consultas por plantilla (`{tema}`, `{tema} estadísticas`, etc.). Se normalizan espacios, se eliminan duplicados y se limita el total con `RESEARCH_MAX_QUERIES`. No usa el modelo.
+2. **Validación de referencias** (`CitationValidator`): cada `[n]` debe apuntar a una fuente recuperada, y cada URL debe coincidir con una fuente recuperada. Las inventadas se eliminan del texto. Que haya una URL no basta para considerar la respuesta verificada.
+3. **Extracción de afirmaciones** (`claim_extractor`): la respuesta se divide en frases. Cada frase conserva las fuentes que cita. Las frases sin contenido suficiente no cuentan como afirmaciones.
+4. **Contraste** (`SourceComparator`): para cada afirmación con cita, compara sus términos y números con el texto de la fuente citada:
+   - `supported`: suficiente coincidencia de términos y todos los números de la afirmación aparecen en la fuente, con al menos un dominio independiente.
+   - `contradicted`: coincidencia alta de términos pero números completamente distintos (p. ej. "en 2022" frente a "en 2018"). Solo se aplica con esta regla estricta.
+   - `unsupported`: sin evidencia suficiente.
+   - `no_citation`: la afirmación no cita ninguna fuente.
+5. **Estado final** (`VerificationService`):
+   - `VERIFIED`: todas las afirmaciones están respaldadas.
+   - `PARTIALLY_VERIFIED`: algunas están respaldadas y otras no.
+   - `UNVERIFIED`: ninguna está respaldada, no hay citas válidas o no hay fuentes.
+
+Ejemplo de respuesta de `/research`:
+
+```json
+{
+  "answer": "El presidente asumió el cargo el 7 de agosto de 2022 [1].",
+  "verification": {
+    "status": "VERIFIED",
+    "valid_citations": 1,
+    "total_citations": 1,
+    "unsupported_claims": [],
+    "claims": [
+      {
+        "text": "El presidente asumió el cargo el 7 de agosto de 2022.",
+        "status": "supported",
+        "cited_sources": [1],
+        "supporting_sources": [1],
+        "contradicting_sources": []
+      }
+    ]
+  }
+}
+```
+
+Las reglas de umbral son configurables con las variables `VERIFICATION_*`.
+
+### Fragmentos de evidencia (Fase 3c)
+
+- Cada página se limpia (líneas de menú y repetidas fuera), se divide en fragmentos de `EVIDENCE_FRAGMENT_CHARS` caracteres con `EVIDENCE_FRAGMENT_OVERLAP_CHARS` de solape y se compara entera, hasta `RESEARCH_PAGE_MAX_CHARS`.
+- Cada afirmación recupera como máximo `EVIDENCE_MAX_FRAGMENTS_PER_CLAIM` fragmentos por fuente citada. Un texto idéntico no se repite dentro de la misma página.
+- Al modelo solo se le envían los fragmentos más relevantes para la pregunta (`RESEARCH_CONTEXT_MAX_CHARS` por fuente, aproximado). Cada fuente conserva su número `[n]`.
+
+### Contraste de cifras y contradicciones
+
+Dos cifras distintas no son una contradicción por sí solas. Solo se comparan cuando coinciden **indicador, período, región y unidad**:
+
+| Caso | Resultado |
+|---|---|
+| Mismo indicador, período y región; valor distinto (p. ej. 10% frente a 12%) | `contradicted` (`percentage` o `numeric`) |
+| Mismo suceso con otro año, sin cifras (p. ej. "asumió en 2022" frente a "en 2018") | `contradicted` (`date`) |
+| Aumento frente a disminución, verdadero frente a falso, existencia frente a ausencia, mayor frente a menor, positivo frente a negativo | `contradicted` |
+| Otra región o período, o no se puede determinar | Discrepancia en `reasons`; no es contradicción |
+
+Los motivos aparecen en `claims[].reasons`.
+
 ### Límites conocidos
 
-- El modelo de 1.5B no siempre elige bien ni contrasta las fuentes: el backend solo verifica que las citas existan, no que el contenido sea correcto. Revisa las URLs antes de confiar en un dato importante.
-- No hay generación de consultas alternativas: se busca la pregunta tal cual.
+- La comparación es léxica (términos y cifras), sin modelos. Una paráfrasis sin términos comunes queda como `unsupported`. Es la contrapartida de no usar embeddings.
+- Las reglas de contradicción son heurísticas. Las regiones se detectan como palabras con mayúscula fuera del inicio de la frase, así que siglas o nombres compuestos pueden dar falsos positivos o negativos. Un "PIB 2022 creció" frente a "PIB 2018 creció" (sin cifras) se marca como fecha incompatible.
+- Las contradicciones de polaridad (aumento/disminución, mayor/menor, etc.) dependen de palabras clave; una negación o una ironía puede confundirlas.
+- El tiempo máximo (`VERIFICATION_MAX_SECONDS`) se comprueba entre afirmaciones; una afirmación individual no se interrumpe a mitad.
+- El modelo de 1.5B no siempre cita bien. Revisa `verification` y las URLs antes de confiar en un dato importante.
 - Páginas que cargan su contenido con JavaScript no tienen texto extraíble y se omiten.
 - En el streaming los tokens llegan tal cual los genera el modelo. Las citas inválidas se eliminan solo del texto guardado y del evento `done`.
 - La protección contra redirecciones a destinos internos depende de la resolución DNS en el momento de la petición; un atacante con control de su DNS podría intentar un rebinding. Para este uso personal el riesgo es bajo, pero no es una defensa perfecta.
@@ -120,7 +184,10 @@ Cada fuente devuelve `title`, `url`, `domain`, `category` (`oficial`, `referenci
 
 ## Tests
 
+Las dependencias de prueba están en `requirements-dev.txt` y no se instalan en la imagen Docker.
+
 ```bash
+pip install -r requirements-dev.txt
 pytest
 ```
 
