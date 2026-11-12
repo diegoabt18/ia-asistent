@@ -21,12 +21,13 @@ from app.services.verification_service import (
     VerificationService,
     verification_service_from_settings,
 )
-from app.services.web_extraction_service import PageDocument, fetch_document
+from app.services.web_extraction_service import PageDocument, fetch_document, is_html_candidate
 
 logger = logging.getLogger(__name__)
 
 NO_INFO_ANSWER = "No encuentro esa información en las fuentes."
 RESULTS_PER_QUERY = 10
+CANDIDATE_FACTOR = 2  # candidatas por plaza de fuente
 
 
 @dataclass(frozen=True)
@@ -104,15 +105,28 @@ class ResearchService:
         if failures:
             logger.warning("%d de %d búsquedas fallaron; se usan los resultados restantes", len(failures), len(queries))
 
-        ranked = rank_and_dedupe(results, max_total=self._settings.research_max_sources)
+        max_sources = self._settings.research_max_sources
+        # Más candidatas que plazas: una descarga fallida no deja la respuesta sin fuentes.
+        ranked = [
+            r
+            for r in rank_and_dedupe(results, max_total=max_sources * CANDIDATE_FACTOR)
+            if is_html_candidate(r.url)
+        ]
         semaphore = asyncio.Semaphore(self._settings.research_fetch_concurrency)
 
         async def load(result: SearchResult) -> PageDocument | None:
             async with semaphore:
                 return await fetch_document(self._client, result.url, self._settings)
 
-        loaded = await asyncio.gather(*(load(r) for r in ranked))
-        documents = [doc for doc in loaded if doc is not None]
+        # Se descarga por tandas de `max_sources` hasta reunir esa cantidad de páginas con texto.
+        documents: list[PageDocument] = []
+        for start in range(0, len(ranked), max_sources):
+            if len(documents) >= max_sources:
+                break
+            batch = ranked[start : start + max_sources]
+            loaded = await asyncio.gather(*(load(r) for r in batch))
+            documents.extend(doc for doc in loaded if doc is not None)
+        documents = documents[:max_sources]
         return ResearchContext(queries=queries, documents=documents)
 
     def verify(self, answer: str, documents: list[PageDocument]) -> VerificationResult:

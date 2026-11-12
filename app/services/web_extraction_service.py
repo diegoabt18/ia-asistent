@@ -16,6 +16,16 @@ logger = logging.getLogger(__name__)
 USER_AGENT = "Mozilla/5.0 (compatible; LocalAIAssistant/0.3)"
 MAX_REDIRECTS = 3
 MIN_TEXT_CHARS = 200
+# Archivos que nunca son HTML: no se descargan, para no gastar una plaza de fuente.
+NON_HTML_EXTENSIONS = (
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip", ".rar", ".gz",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp3", ".mp4", ".avi", ".mov",
+)
+
+
+def is_html_candidate(url: str) -> bool:
+    """Descarta por la ruta de la URL los archivos que claramente no son páginas HTML."""
+    return not urlsplit(url).path.lower().endswith(NON_HTML_EXTENSIONS)
 
 
 @dataclass(frozen=True)
