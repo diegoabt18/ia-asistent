@@ -11,8 +11,9 @@ from fastapi.responses import JSONResponse
 import app.models  # noqa: F401  registra los modelos en Base.metadata
 from app.api.v1.router import api_router
 from app.core.config import get_settings
-from app.core.database import Base, create_db
+from app.core.database import create_db, init_schema
 from app.core.exceptions import ConversationNotFoundError, UpstreamServiceError
+from app.repositories.conversation_repository import ConversationRepository
 from app.services.redis_service import create_redis_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -23,7 +24,10 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine, session_factory = create_db(settings.database_url)
-    Base.metadata.create_all(engine)
+    init_schema(engine)
+    removed = ConversationRepository(session_factory).purge_usage(settings.usage_retention_days)
+    if removed:
+        logging.getLogger(__name__).info("Registros de consumo antiguos eliminados: %d", removed)
 
     app.state.settings = settings
     app.state.http = httpx.AsyncClient()

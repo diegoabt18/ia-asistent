@@ -59,15 +59,20 @@ Swagger: http://127.0.0.1:8000/docs
 | GET | `/api/v1/health` | No | Estado de la API |
 | GET | `/api/v1/health/dependencies` | Sí | Estado de Redis, Ollama y SearXNG |
 | GET | `/api/v1/models` | Sí | Modelos de Ollama y disponibilidad del configurado |
-| POST | `/api/v1/chat` | Sí | Responde y guarda el turno. Con `use_web: true` busca en la web antes |
-| POST | `/api/v1/chat/stream` | Sí | Igual que `/chat`, en streaming SSE |
-| POST | `/api/v1/research` | Sí | Investiga una pregunta y devuelve respuesta con fuentes |
-| GET | `/api/v1/conversations` | Sí | Lista conversaciones (`limit`, `offset`) |
-| GET | `/api/v1/conversations/{id}` | Sí | Conversación con todos sus mensajes |
-| DELETE | `/api/v1/conversations/{id}` | Sí | Elimina la conversación y sus mensajes |
+| POST | `/api/v1/chat` | Sí + usuario | Responde y guarda el turno. Con `use_web: true` busca en la web antes |
+| POST | `/api/v1/chat/stream` | Sí + usuario | Igual que `/chat`, en streaming SSE |
+| POST | `/api/v1/research` | Sí + usuario | Investiga una pregunta y devuelve respuesta con fuentes |
+| GET | `/api/v1/conversations` | Sí + usuario | Lista las conversaciones del usuario (`limit`, `offset`) |
+| GET | `/api/v1/conversations/{id}` | Sí + usuario | Conversación con todos sus mensajes |
+| DELETE | `/api/v1/conversations/{id}` | Sí + usuario | Elimina la conversación y sus mensajes |
+| GET | `/api/v1/usage?days=30` | Sí + usuario | Consumo de inferencia del usuario (peticiones y tokens) |
 | GET | `/api/v1/search?q=...` | Sí | Búsqueda directa en SearXNG (sin leer las páginas) |
 
 Autenticación: cabecera `X-API-Key: <tu clave>`. Si `API_KEY` está vacía, los endpoints protegidos responden 503.
+
+Identidad por usuario: las rutas marcadas "+ usuario" exigen la cabecera `X-User-Ref: <id>` (1–64 caracteres `A-Z a-z 0-9 _ -`). La envía solo el servidor de Lumia, que ya autorizó al usuario; esta API no la verifica por sí misma. Cada usuario tiene sus propias conversaciones y solo ve su consumo. Las conversaciones anteriores a este cambio no tienen dueño y no son accesibles.
+
+Consumo: cada respuesta correcta del modelo registra tokens de entrada y salida en `usage_events`. Los registros más antiguos que `USAGE_RETENTION_DAYS` (90 por defecto) se borran al arrancar.
 
 ### Ejemplos
 

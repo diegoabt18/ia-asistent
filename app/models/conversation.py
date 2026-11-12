@@ -15,6 +15,9 @@ class Conversation(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     title: Mapped[str] = mapped_column(String(120))
+    # Identificador opaco del usuario (el _id de identity_db, enviado por el servidor).
+    # NULL en conversaciones anteriores a la identidad por usuario: no son accesibles.
+    user_ref: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

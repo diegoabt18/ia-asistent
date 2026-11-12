@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from app.core.dependencies import get_assistant_service
+from app.core.security import UserRef
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.services.assistant_service import AssistantService
 from app.services.verification_service import to_schema
@@ -15,14 +16,17 @@ router = APIRouter(tags=["chat"])
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     payload: ChatRequest,
+    user_ref: UserRef,
     assistant: AssistantService = Depends(get_assistant_service),
 ) -> ChatResponse:
     result = await assistant.reply(
         payload.message,
         payload.conversation_id,
+        user_ref,
         payload.temperature,
         payload.max_tokens,
         use_web=payload.use_web,
+        context=payload.context,
     )
     return ChatResponse(
         conversation_id=result.conversation_id,
@@ -41,17 +45,20 @@ async def _to_sse(events: AsyncIterator[tuple[str, dict]]) -> AsyncIterator[str]
 @router.post("/chat/stream", response_class=StreamingResponse)
 async def chat_stream(
     payload: ChatRequest,
+    user_ref: UserRef,
     assistant: AssistantService = Depends(get_assistant_service),
 ) -> StreamingResponse:
     # La validación de la conversación ocurre antes de empezar el stream, para poder devolver 404.
     if payload.conversation_id is not None:
-        await assistant.validate_conversation(payload.conversation_id)
+        await assistant.validate_conversation(payload.conversation_id, user_ref)
     events = assistant.stream_reply(
         payload.message,
         payload.conversation_id,
+        user_ref,
         payload.temperature,
         payload.max_tokens,
         use_web=payload.use_web,
+        context=payload.context,
     )
     return StreamingResponse(
         _to_sse(events),

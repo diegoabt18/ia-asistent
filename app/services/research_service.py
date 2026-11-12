@@ -12,7 +12,7 @@ from app.prompts.research_prompts import build_research_messages
 from app.schemas.research import ResearchSource
 from app.schemas.search import SearchResult
 from app.services.evidence import select_context
-from app.services.ollama_service import OllamaService
+from app.services.ollama_service import ModelUsage, OllamaService
 from app.services.query_generator import QueryGenerator
 from app.services.search_service import SearchService
 from app.services.source_ranking import classify, domain_of, rank_and_dedupe
@@ -43,6 +43,8 @@ class ResearchAnswer:
     queries: list[str]
     sources: list[ResearchSource]
     verification: VerificationResult
+    # None cuando no hubo llamada al modelo (no se encontraron fuentes).
+    usage: ModelUsage | None = None
 
 
 def to_sources(documents: list[PageDocument], cited: Iterable[int]) -> list[ResearchSource]:
@@ -161,12 +163,13 @@ class ResearchService:
 
         prompt_docs = self.context_for(question, context.documents)
         messages = build_research_messages(question, prompt_docs, date.today())
-        raw = await self._ollama.chat(messages, temperature=0.1, max_tokens=700)
-        result = await self.verify_limited(raw, context.documents)
+        completion = await self._ollama.chat(messages, temperature=0.1, max_tokens=700)
+        result = await self.verify_limited(completion.text, context.documents)
         return ResearchAnswer(
             question=question,
             answer=result.answer,
             queries=context.queries,
             sources=to_sources(context.documents, result.valid_source_indices),
             verification=result,
+            usage=completion.usage,
         )

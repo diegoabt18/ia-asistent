@@ -1,8 +1,16 @@
 import hmac
+from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
 
 from app.core.config import Settings, get_settings
+
+# Identificador opaco del usuario que envía el servidor (el _id de identity_db).
+USER_REF_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
+
+# Cabecera obligatoria en las rutas que consumen el modelo o acceden a conversaciones.
+# Solo el servidor (con la API key de servicio) puede enviarla; la API no la verifica por sí misma.
+UserRef = Annotated[str, Header(alias="X-User-Ref", pattern=USER_REF_PATTERN)]
 
 
 def require_api_key(

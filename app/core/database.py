@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 
@@ -27,3 +27,28 @@ def create_db(url: str) -> tuple[Engine, sessionmaker]:
     )
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     return engine, factory
+
+
+def init_schema(engine: Engine) -> None:
+    """Crea las tablas que falten y añade las columnas nuevas a bases ya existentes.
+
+    `create_all` no altera tablas existentes, así que la columna `user_ref` de
+    `conversations` se añade aquí si la base es anterior a la identidad por usuario.
+    """
+    # Importa los modelos para que estén registrados en Base.metadata.
+    import app.models  # noqa: F401
+
+    Base.metadata.create_all(engine)
+    inspector = inspect(engine)
+    if "conversations" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("conversations")}
+    if "user_ref" not in columns:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE conversations ADD COLUMN user_ref VARCHAR(64)"))
+    index_names = {i["name"] for i in inspector.get_indexes("conversations")}
+    if "ix_conversations_user_ref" not in index_names:
+        with engine.begin() as conn:
+            conn.execute(
+                text("CREATE INDEX ix_conversations_user_ref ON conversations (user_ref)")
+            )

@@ -4,6 +4,7 @@ from app.core.config import Settings
 from app.core.exceptions import UpstreamServiceError
 from app.schemas.search import SearchResult
 from app.services import research_service
+from app.services.ollama_service import ChatCompletion, ModelUsage
 from app.services.research_service import NO_INFO_ANSWER, ResearchService
 from app.services.web_extraction_service import PageDocument
 
@@ -35,11 +36,11 @@ class FakeOllama:
         self._reply = reply
         self.calls = 0
 
-    async def chat(self, messages, temperature, max_tokens) -> str:
+    async def chat(self, messages, temperature, max_tokens) -> ChatCompletion:
         self.calls += 1
         if isinstance(self._reply, Exception):
             raise self._reply
-        return self._reply
+        return ChatCompletion(text=self._reply, usage=ModelUsage(prompt_tokens=0, completion_tokens=0))
 
 
 def _result(url: str) -> SearchResult:

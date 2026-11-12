@@ -12,6 +12,8 @@ class ChatRequest(BaseModel):
     use_web: bool = False
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=512, ge=1, le=2048)
+    # Datos de solo lectura de la pantalla del administrador. Va al prompt y NO se guarda en el historial.
+    context: str | None = Field(default=None, max_length=2000)
 
 
 class ChatResponse(BaseModel):

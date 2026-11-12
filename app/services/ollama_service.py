@@ -1,10 +1,33 @@
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 
 import httpx
 
 from app.core.config import Settings
 from app.core.exceptions import UpstreamServiceError
+
+
+@dataclass(frozen=True)
+class ModelUsage:
+    """Tokens consumidos por una llamada al modelo, tal como los informa Ollama."""
+
+    prompt_tokens: int
+    completion_tokens: int
+
+
+@dataclass(frozen=True)
+class ChatCompletion:
+    text: str
+    usage: ModelUsage
+
+
+def _usage_from(chunk: dict) -> ModelUsage:
+    # Ollama informa los contadores en la respuesta final. Si faltan, se cuentan como 0.
+    return ModelUsage(
+        prompt_tokens=int(chunk.get("prompt_eval_count") or 0),
+        completion_tokens=int(chunk.get("eval_count") or 0),
+    )
 
 
 class OllamaService:
@@ -38,21 +61,30 @@ class OllamaService:
 
     async def chat(
         self, messages: list[dict[str, str]], temperature: float, max_tokens: int
-    ) -> str:
+    ) -> ChatCompletion:
         payload = self._payload(messages, temperature, max_tokens, stream=False)
         try:
             r = await self._client.post(
                 self._chat_url, json=payload, timeout=self._settings.ollama_timeout_seconds
             )
             r.raise_for_status()
-        except httpx.HTTPError as exc:
+            body = r.json()
+            text = body["message"]["content"]
+        except (httpx.HTTPError, ValueError, KeyError) as exc:
             raise UpstreamServiceError("Ollama", str(exc)) from exc
-        return r.json()["message"]["content"]
+        return ChatCompletion(text=text, usage=_usage_from(body))
 
     async def chat_stream(
-        self, messages: list[dict[str, str]], temperature: float, max_tokens: int
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        on_usage: Callable[[ModelUsage], None] | None = None,
     ) -> AsyncIterator[str]:
-        """Emite fragmentos de texto a medida que Ollama los genera (NDJSON)."""
+        """Emite fragmentos de texto a medida que Ollama los genera (NDJSON).
+
+        `on_usage` se invoca una vez, con los tokens consumidos, al terminar el stream.
+        """
         payload = self._payload(messages, temperature, max_tokens, stream=True)
         try:
             async with self._client.stream(
@@ -67,6 +99,8 @@ class OllamaService:
                     if text:
                         yield text
                     if chunk.get("done"):
+                        if on_usage is not None:
+                            on_usage(_usage_from(chunk))
                         return
         except (httpx.HTTPError, ValueError) as exc:
             raise UpstreamServiceError("Ollama", str(exc)) from exc
