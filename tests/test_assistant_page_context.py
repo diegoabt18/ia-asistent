@@ -16,11 +16,11 @@ class CapturingOllama:
     def __init__(self) -> None:
         self.sent: list[list[dict]] = []
 
-    async def chat(self, messages, temperature, max_tokens) -> ChatCompletion:
+    async def chat(self, messages, temperature, max_tokens, think=False) -> ChatCompletion:
         self.sent.append(messages)
         return ChatCompletion(text="ok", usage=ModelUsage(prompt_tokens=1, completion_tokens=1))
 
-    async def chat_stream(self, messages, temperature, max_tokens, on_usage=None):
+    async def chat_stream(self, messages, temperature, max_tokens, on_usage=None, think=False):
         self.sent.append(messages)
         yield "ok"
         if on_usage is not None:

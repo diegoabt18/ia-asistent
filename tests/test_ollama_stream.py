@@ -21,13 +21,34 @@ async def test_chat_stream_yields_tokens_until_done() -> None:
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert json.loads(request.content)["stream"] is True
+        payload = json.loads(request.content)
+        assert payload["stream"] is True
+        assert payload["think"] is False
         return httpx.Response(200, content=body)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         service = OllamaService(Settings(), client)
         pieces = [p async for p in service.chat_stream([{"role": "user", "content": "hi"}], 0.1, 32)]
     assert pieces == ["Hola", " mundo"]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_sends_think_when_requested() -> None:
+    body = _ndjson({"message": {"role": "assistant", "content": "ok"}, "done": True})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["think"] is True
+        return httpx.Response(200, content=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        service = OllamaService(Settings(), client)
+        pieces = [
+            p
+            async for p in service.chat_stream(
+                [{"role": "user", "content": "hi"}], 0.1, 32, think=True
+            )
+        ]
+    assert pieces == ["ok"]
 
 
 @pytest.mark.asyncio

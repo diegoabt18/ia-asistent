@@ -16,11 +16,11 @@ class FakeOllama:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def chat(self, messages, temperature, max_tokens) -> ChatCompletion:
+    async def chat(self, messages, temperature, max_tokens, think=False) -> ChatCompletion:
         self.calls += 1
         return ChatCompletion(text="respuesta", usage=ModelUsage(prompt_tokens=11, completion_tokens=5))
 
-    async def chat_stream(self, messages, temperature, max_tokens, on_usage=None):
+    async def chat_stream(self, messages, temperature, max_tokens, on_usage=None, think=False):
         self.calls += 1
         yield "res"
         yield "puesta"

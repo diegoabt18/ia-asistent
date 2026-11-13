@@ -38,12 +38,20 @@ class OllamaService:
         self._client = client
 
     def _payload(
-        self, messages: list[dict[str, str]], temperature: float, max_tokens: int, stream: bool
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        stream: bool,
+        think: bool,
     ) -> dict:
         return {
             "model": self._settings.ollama_model,
             "messages": messages,
             "stream": stream,
+            # Con think=False, los modelos con razonamiento (p. ej. qwen3.5) no gastan tokens en el
+            # "thinking": la respuesta va en `content` y no sale en blanco.
+            "think": think,
             "options": {"temperature": temperature, "num_predict": max_tokens},
         }
 
@@ -60,9 +68,13 @@ class OllamaService:
         return [m["name"] for m in r.json().get("models", [])]
 
     async def chat(
-        self, messages: list[dict[str, str]], temperature: float, max_tokens: int
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        think: bool = False,
     ) -> ChatCompletion:
-        payload = self._payload(messages, temperature, max_tokens, stream=False)
+        payload = self._payload(messages, temperature, max_tokens, stream=False, think=think)
         try:
             r = await self._client.post(
                 self._chat_url, json=payload, timeout=self._settings.ollama_timeout_seconds
@@ -80,12 +92,14 @@ class OllamaService:
         temperature: float,
         max_tokens: int,
         on_usage: Callable[[ModelUsage], None] | None = None,
+        think: bool = False,
     ) -> AsyncIterator[str]:
         """Emite fragmentos de texto a medida que Ollama los genera (NDJSON).
 
         `on_usage` se invoca una vez, con los tokens consumidos, al terminar el stream.
+        `think` activa el razonamiento del modelo; consume tokens de `max_tokens`.
         """
-        payload = self._payload(messages, temperature, max_tokens, stream=True)
+        payload = self._payload(messages, temperature, max_tokens, stream=True, think=think)
         try:
             async with self._client.stream(
                 "POST", self._chat_url, json=payload, timeout=self._settings.ollama_timeout_seconds

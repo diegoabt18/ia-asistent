@@ -140,13 +140,14 @@ class AssistantService:
         max_tokens: int,
         use_web: bool = False,
         context: str | None = None,
+        think: bool = False,
     ) -> ChatResult:
         if conversation_id is not None:
             await self.validate_conversation(conversation_id, user_ref)
         conv_id = conversation_id or str(uuid.uuid4())
         messages, documents = await self._prepare(conversation_id, user_ref, message, use_web, context)
 
-        completion = await self._ollama.chat(messages, temperature, max_tokens)
+        completion = await self._ollama.chat(messages, temperature, max_tokens, think=think)
         raw = completion.text
         if use_web:
             verification = await self._research.verify_limited(raw, documents)
@@ -194,6 +195,7 @@ class AssistantService:
         max_tokens: int,
         use_web: bool = False,
         context: str | None = None,
+        think: bool = False,
     ) -> AsyncIterator[tuple[str, dict]]:
         """Emite eventos (evento, datos). Si el cliente se desconecta, no se guarda el turno.
 
@@ -211,7 +213,7 @@ class AssistantService:
             if use_web:
                 yield "sources", {"sources": [s.model_dump() for s in to_sources(documents, [])]}
             async for piece in self._ollama.chat_stream(
-                messages, temperature, max_tokens, on_usage=usages.append
+                messages, temperature, max_tokens, on_usage=usages.append, think=think
             ):
                 parts.append(piece)
                 yield "token", {"text": piece}

@@ -27,6 +27,7 @@ async def chat(
         payload.max_tokens,
         use_web=payload.use_web,
         context=payload.context,
+        think=payload.think,
     )
     return ChatResponse(
         conversation_id=result.conversation_id,
@@ -59,6 +60,7 @@ async def chat_stream(
         payload.max_tokens,
         use_web=payload.use_web,
         context=payload.context,
+        think=payload.think,
     )
     return StreamingResponse(
         _to_sse(events),
