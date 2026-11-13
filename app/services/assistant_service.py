@@ -107,6 +107,22 @@ class AssistantService:
         if not exists:
             raise ConversationNotFoundError(conversation_id)
 
+    async def record_exchange(
+        self,
+        message: str,
+        answer: str,
+        conversation_id: str | None,
+        user_ref: str,
+    ) -> str:
+        """Guarda un turno sin llamar al modelo. Devuelve el identificador de la conversación."""
+        if conversation_id is not None:
+            await self.validate_conversation(conversation_id, user_ref)
+        conv_id = conversation_id or str(uuid.uuid4())
+        await asyncio.to_thread(
+            self._repo.add_exchange, conv_id, user_ref, message, answer, title_from(message)
+        )
+        return conv_id
+
     async def _prepare(
         self,
         conversation_id: str | None,

@@ -25,3 +25,15 @@ class ChatResponse(BaseModel):
     sources: list[ResearchSource] = Field(default_factory=list)
     # Solo se rellena cuando use_web es true.
     verification: VerificationOut | None = None
+
+
+class ExchangeRequest(BaseModel):
+    """Turno ya resuelto sin modelo (herramienta del backend). Solo se guarda en el historial."""
+
+    message: str = Field(min_length=1, max_length=4000)
+    answer: str = Field(min_length=1, max_length=8000)
+    conversation_id: str | None = Field(default=None, min_length=36, max_length=36)
+
+
+class ExchangeResponse(BaseModel):
+    conversation_id: str

@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 
 from app.core.dependencies import get_assistant_service
 from app.core.security import UserRef
-from app.schemas.chat import ChatRequest, ChatResponse
+from app.schemas.chat import ChatRequest, ChatResponse, ExchangeRequest, ExchangeResponse
 from app.services.assistant_service import AssistantService
 from app.services.verification_service import to_schema
 
@@ -36,6 +36,19 @@ async def chat(
         sources=result.sources,
         verification=to_schema(result.verification) if result.verification else None,
     )
+
+
+@router.post("/chat/exchange", response_model=ExchangeResponse)
+async def record_exchange(
+    payload: ExchangeRequest,
+    user_ref: UserRef,
+    assistant: AssistantService = Depends(get_assistant_service),
+) -> ExchangeResponse:
+    # No usa el modelo: solo guarda un turno que el backend ya resolvió.
+    conversation_id = await assistant.record_exchange(
+        payload.message, payload.answer, payload.conversation_id, user_ref
+    )
+    return ExchangeResponse(conversation_id=conversation_id)
 
 
 async def _to_sse(events: AsyncIterator[tuple[str, dict]]) -> AsyncIterator[str]:
