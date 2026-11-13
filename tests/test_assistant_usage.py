@@ -22,8 +22,8 @@ class FakeOllama:
 
     async def chat_stream(self, messages, temperature, max_tokens, on_usage=None, think=False):
         self.calls += 1
-        yield "res"
-        yield "puesta"
+        yield "content", "res"
+        yield "content", "puesta"
         if on_usage is not None:
             on_usage(ModelUsage(prompt_tokens=11, completion_tokens=5))
 

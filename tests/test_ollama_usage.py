@@ -66,5 +66,5 @@ async def test_chat_stream_reports_usage_on_the_final_chunk() -> None:
                 [{"role": "user", "content": "hi"}], 0.1, 32, on_usage=seen.append
             )
         ]
-    assert pieces == ["Hola"]
+    assert pieces == [("content", "Hola")]
     assert seen == [ModelUsage(prompt_tokens=10, completion_tokens=3)]

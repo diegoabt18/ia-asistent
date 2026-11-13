@@ -93,11 +93,12 @@ class OllamaService:
         max_tokens: int,
         on_usage: Callable[[ModelUsage], None] | None = None,
         think: bool = False,
-    ) -> AsyncIterator[str]:
-        """Emite fragmentos de texto a medida que Ollama los genera (NDJSON).
+    ) -> AsyncIterator[tuple[str, str]]:
+        """Emite fragmentos a medida que Ollama los genera (NDJSON).
 
+        Cada fragmento es `("thinking", texto)` o `("content", texto)`. El razonamiento solo llega
+        con `think=True`; consume tokens de `max_tokens`.
         `on_usage` se invoca una vez, con los tokens consumidos, al terminar el stream.
-        `think` activa el razonamiento del modelo; consume tokens de `max_tokens`.
         """
         payload = self._payload(messages, temperature, max_tokens, stream=True, think=think)
         try:
@@ -109,9 +110,13 @@ class OllamaService:
                     if not line.strip():
                         continue
                     chunk = json.loads(line)
-                    text = chunk.get("message", {}).get("content", "")
+                    message = chunk.get("message", {})
+                    thinking = message.get("thinking", "")
+                    if thinking:
+                        yield "thinking", thinking
+                    text = message.get("content", "")
                     if text:
-                        yield text
+                        yield "content", text
                     if chunk.get("done"):
                         if on_usage is not None:
                             on_usage(_usage_from(chunk))

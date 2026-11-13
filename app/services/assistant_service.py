@@ -212,9 +212,13 @@ class AssistantService:
             messages, documents = await self._prepare(conversation_id, user_ref, message, use_web, context)
             if use_web:
                 yield "sources", {"sources": [s.model_dump() for s in to_sources(documents, [])]}
-            async for piece in self._ollama.chat_stream(
+            async for kind, piece in self._ollama.chat_stream(
                 messages, temperature, max_tokens, on_usage=usages.append, think=think
             ):
+                if kind == "thinking":
+                    # El razonamiento solo se muestra en vivo: no entra en `parts` ni en el historial.
+                    yield "thinking", {"text": piece}
+                    continue
                 parts.append(piece)
                 yield "token", {"text": piece}
         except UpstreamServiceError as exc:

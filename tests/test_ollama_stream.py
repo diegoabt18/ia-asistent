@@ -29,7 +29,7 @@ async def test_chat_stream_yields_tokens_until_done() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         service = OllamaService(Settings(), client)
         pieces = [p async for p in service.chat_stream([{"role": "user", "content": "hi"}], 0.1, 32)]
-    assert pieces == ["Hola", " mundo"]
+    assert pieces == [("content", "Hola"), ("content", " mundo")]
 
 
 @pytest.mark.asyncio
@@ -48,7 +48,29 @@ async def test_chat_stream_sends_think_when_requested() -> None:
                 [{"role": "user", "content": "hi"}], 0.1, 32, think=True
             )
         ]
-    assert pieces == ["ok"]
+    assert pieces == [("content", "ok")]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_separates_thinking_from_content() -> None:
+    body = _ndjson(
+        {"message": {"role": "assistant", "thinking": "Voy a pensar"}, "done": False},
+        {"message": {"role": "assistant", "content": "Respuesta"}, "done": False},
+        {"message": {"role": "assistant", "content": ""}, "done": True},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        service = OllamaService(Settings(), client)
+        pieces = [
+            p
+            async for p in service.chat_stream(
+                [{"role": "user", "content": "hi"}], 0.1, 32, think=True
+            )
+        ]
+    assert pieces == [("thinking", "Voy a pensar"), ("content", "Respuesta")]
 
 
 @pytest.mark.asyncio

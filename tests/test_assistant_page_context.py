@@ -22,7 +22,7 @@ class CapturingOllama:
 
     async def chat_stream(self, messages, temperature, max_tokens, on_usage=None, think=False):
         self.sent.append(messages)
-        yield "ok"
+        yield "content", "ok"
         if on_usage is not None:
             on_usage(ModelUsage(prompt_tokens=1, completion_tokens=1))
 
