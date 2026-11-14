@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # el contexto de un modelo pequeño (4096 tokens por defecto en Ollama).
     chat_history_messages: int = 12
     chat_max_context_chars: int = 6000
+    # En modo web, el historial reciente solo sirve para entender la pregunta (referencias como
+    # "esa" o "eso"). Es más corto que el historial normal.
+    web_history_messages: int = 4
+    web_history_chars: int = 1500
 
     # Investigación web: cuántas páginas leer, cuánto texto guardar de cada una y límites de descarga.
     research_max_sources: int = 4

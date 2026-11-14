@@ -6,7 +6,12 @@ from datetime import date
 
 from app.core.config import Settings
 from app.core.exceptions import ConversationNotFoundError, UpstreamServiceError
-from app.prompts.research_prompts import format_sources, research_system_prompt
+from app.prompts.research_prompts import (
+    format_recent_conversation,
+    format_sources,
+    normalize_no_info,
+    research_system_prompt,
+)
 from app.prompts.system_prompts import SYSTEM_PROMPT
 from app.repositories.conversation_repository import ConversationRepository
 from app.schemas.research import ResearchSource
@@ -134,23 +139,23 @@ class AssistantService:
         documents: list[PageDocument] = []
         system_prompt = SYSTEM_PROMPT
         user_content = message
+
+        history: list[tuple[str, str]] = []
+        if conversation_id is not None:
+            limit = self._settings.web_history_messages if use_web else self._settings.chat_history_messages
+            rows = await asyncio.to_thread(self._repo.recent_messages, conversation_id, user_ref, limit)
+            history = [(m.role, m.content) for m in rows]
+
         if use_web:
-            documents = (await self._research.gather(message)).documents
+            # El historial reciente entra en la búsqueda (para reescribir la consulta) y en la respuesta
+            # (para entender "esa", "eso" o una corrección). Va como contexto, no como turnos de chat.
+            documents = (await self._research.gather(message, history)).documents
             system_prompt = research_system_prompt(date.today())
             prompt_docs = self._research.context_for(message, documents)
             sources = format_sources(prompt_docs) or "(ninguna fuente pudo leerse)"
-            user_content = f"Fuentes:\n{sources}\n\nPregunta: {message}"
-
-        history: list[tuple[str, str]] = []
-        # En modo web solo viaja la pregunta: el historial mezclaba temas y alargaba el razonamiento.
-        if conversation_id is not None and not use_web:
-            rows = await asyncio.to_thread(
-                self._repo.recent_messages,
-                conversation_id,
-                user_ref,
-                self._settings.chat_history_messages,
-            )
-            history = [(m.role, m.content) for m in rows]
+            conversation = format_recent_conversation(history, self._settings.web_history_chars)
+            user_content = f"{conversation}Fuentes:\n{sources}\n\nPregunta: {message}"
+            history = []
 
         # El presupuesto de historial es el mismo aunque el mensaje incluya fuentes.
         budget = self._settings.chat_max_context_chars + len(user_content)
@@ -178,6 +183,7 @@ class AssistantService:
         )
         raw = completion.text
         if use_web:
+            raw = normalize_no_info(raw)
             verification = await self._research.verify_limited(raw, documents)
             text = verification.answer
             sources = to_sources(documents, verification.valid_source_indices)
@@ -259,6 +265,7 @@ class AssistantService:
 
         raw = "".join(parts)
         if use_web:
+            raw = normalize_no_info(raw)
             verification = await self._research.verify_limited(raw, documents)
             text = verification.answer
             sources = to_sources(documents, verification.valid_source_indices)

@@ -8,12 +8,13 @@ import httpx
 
 from app.core.config import Settings
 from app.core.exceptions import UpstreamServiceError
-from app.prompts.research_prompts import build_research_messages
+from app.prompts.research_prompts import NO_INFO_ANSWER, build_research_messages
 from app.schemas.research import ResearchSource
 from app.schemas.search import SearchResult
 from app.services.evidence import select_context
 from app.services.ollama_service import ModelUsage, OllamaService
 from app.services.query_generator import QueryGenerator
+from app.services.query_rewriter import rewrite_queries
 from app.services.search_service import SearchService
 from app.services.source_ranking import classify, domain_of, rank_and_dedupe
 from app.services.verification_service import (
@@ -25,9 +26,10 @@ from app.services.web_extraction_service import PageDocument, fetch_document, is
 
 logger = logging.getLogger(__name__)
 
-NO_INFO_ANSWER = "No encuentro esa información en las fuentes."
 RESULTS_PER_QUERY = 10
 CANDIDATE_FACTOR = 2  # candidatas por plaza de fuente
+# El snippet de SearXNG sirve como evidencia cuando la página no se pudo descargar.
+MIN_SNIPPET_CHARS = 60
 
 
 @dataclass(frozen=True)
@@ -85,8 +87,28 @@ class ResearchService:
         # Compartido por proceso (se inyecta desde app.state). Sin él, el límite es solo de esta instancia.
         self._verify_slots = verify_slots or asyncio.Semaphore(max(1, settings.verification_max_concurrent))
 
-    async def gather(self, question: str) -> ResearchContext:
-        queries = self._queries.generate(question)
+    async def _build_queries(self, question: str, history: list[tuple[str, str]]) -> list[str]:
+        """Consultas que escribe el modelo (con el historial para las referencias). Si no hay modelo
+        o no devuelve nada útil, se usa la plantilla determinista de siempre."""
+        fallback = self._queries.generate(question)
+        if self._ollama is None:
+            return fallback
+        try:
+            rewritten = await rewrite_queries(
+                self._ollama,
+                question,
+                history,
+                self._settings.research_max_queries,
+                self._settings.web_history_chars,
+                date.today(),
+            )
+        except UpstreamServiceError as exc:
+            logger.warning("No se pudieron reescribir las consultas; se usan plantillas: %s", exc)
+            return fallback
+        return rewritten or fallback
+
+    async def gather(self, question: str, history: list[tuple[str, str]] | None = None) -> ResearchContext:
+        queries = await self._build_queries(question, history or [])
         outcomes = await asyncio.gather(
             *(self._search.search(q, limit=RESULTS_PER_QUERY) for q in queries),
             return_exceptions=True,
@@ -129,6 +151,25 @@ class ResearchService:
             loaded = await asyncio.gather(*(load(r) for r in batch))
             documents.extend(doc for doc in loaded if doc is not None)
         documents = documents[:max_sources]
+
+        # Si faltan fuentes porque las páginas no se descargaron, el snippet del buscador también es evidencia.
+        loaded_urls = {doc.url for doc in documents}
+        for result in ranked:
+            if len(documents) >= max_sources:
+                break
+            snippet = " ".join(result.snippet.split())
+            if result.url in loaded_urls or len(snippet) < MIN_SNIPPET_CHARS:
+                continue
+            documents.append(
+                PageDocument(
+                    url=result.url,
+                    domain=domain_of(result.url),
+                    title=result.title,
+                    published_date=None,
+                    text=snippet,
+                )
+            )
+            loaded_urls.add(result.url)
         return ResearchContext(queries=queries, documents=documents)
 
     def verify(self, answer: str, documents: list[PageDocument]) -> VerificationResult:

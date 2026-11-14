@@ -37,6 +37,9 @@ class FakeOllama:
         self.calls = 0
 
     async def chat(self, messages, temperature, max_tokens) -> ChatCompletion:
+        # La reescritura de consultas también llama al modelo: sin texto, se usan las plantillas.
+        if "generador de consultas" in messages[0]["content"]:
+            return ChatCompletion(text="", usage=ModelUsage(prompt_tokens=0, completion_tokens=0))
         self.calls += 1
         if isinstance(self._reply, Exception):
             raise self._reply
