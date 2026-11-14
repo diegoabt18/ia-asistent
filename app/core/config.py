@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/assistant.db"
 
     ollama_base_url: str = "http://127.0.0.1:11434"
-    ollama_model: str = "qwen2.5:1.5b-instruct-q4_K_M"
+    ollama_model: str = "qwen3.5:2b-q4_K_M"
     ollama_timeout_seconds: float = 120.0
 
     # Días que se conservan los registros de consumo (usage_events). 0 = no borrar.
