@@ -1,11 +1,13 @@
+import asyncio
 import json
 from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 import httpx
 
 from app.core.config import Settings
-from app.core.exceptions import UpstreamServiceError
+from app.core.exceptions import ModelBusyError, UpstreamServiceError
 
 
 @dataclass(frozen=True)
@@ -33,9 +35,32 @@ def _usage_from(chunk: dict) -> ModelUsage:
 class OllamaService:
     """Adaptador HTTP para la instancia de Ollama existente."""
 
-    def __init__(self, settings: Settings, client: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        client: httpx.AsyncClient,
+        slots: asyncio.Semaphore | None = None,
+    ) -> None:
         self._settings = settings
         self._client = client
+        # Semáforo compartido por todo el proceso (app.state.model_slots). Sin él no hay límite.
+        self._slots = slots
+
+    @asynccontextmanager
+    async def _model_slot(self) -> AsyncIterator[None]:
+        if self._slots is None:
+            yield
+            return
+        try:
+            await asyncio.wait_for(
+                self._slots.acquire(), timeout=self._settings.ollama_queue_timeout_seconds
+            )
+        except asyncio.TimeoutError as exc:
+            raise ModelBusyError() from exc
+        try:
+            yield
+        finally:
+            self._slots.release()
 
     def _payload(
         self,
@@ -75,15 +100,16 @@ class OllamaService:
         think: bool = False,
     ) -> ChatCompletion:
         payload = self._payload(messages, temperature, max_tokens, stream=False, think=think)
-        try:
-            r = await self._client.post(
-                self._chat_url, json=payload, timeout=self._settings.ollama_timeout_seconds
-            )
-            r.raise_for_status()
-            body = r.json()
-            text = body["message"]["content"]
-        except (httpx.HTTPError, ValueError, KeyError) as exc:
-            raise UpstreamServiceError("Ollama", str(exc)) from exc
+        async with self._model_slot():
+            try:
+                r = await self._client.post(
+                    self._chat_url, json=payload, timeout=self._settings.ollama_timeout_seconds
+                )
+                r.raise_for_status()
+                body = r.json()
+                text = body["message"]["content"]
+            except (httpx.HTTPError, ValueError, KeyError) as exc:
+                raise UpstreamServiceError("Ollama", str(exc)) from exc
         return ChatCompletion(text=text, usage=_usage_from(body))
 
     async def chat_stream(
@@ -101,25 +127,29 @@ class OllamaService:
         `on_usage` se invoca una vez, con los tokens consumidos, al terminar el stream.
         """
         payload = self._payload(messages, temperature, max_tokens, stream=True, think=think)
-        try:
-            async with self._client.stream(
-                "POST", self._chat_url, json=payload, timeout=self._settings.ollama_timeout_seconds
-            ) as r:
-                r.raise_for_status()
-                async for line in r.aiter_lines():
-                    if not line.strip():
-                        continue
-                    chunk = json.loads(line)
-                    message = chunk.get("message", {})
-                    thinking = message.get("thinking", "")
-                    if thinking:
-                        yield "thinking", thinking
-                    text = message.get("content", "")
-                    if text:
-                        yield "content", text
-                    if chunk.get("done"):
-                        if on_usage is not None:
-                            on_usage(_usage_from(chunk))
-                        return
-        except (httpx.HTTPError, ValueError) as exc:
-            raise UpstreamServiceError("Ollama", str(exc)) from exc
+        async with self._model_slot():
+            try:
+                async with self._client.stream(
+                    "POST",
+                    self._chat_url,
+                    json=payload,
+                    timeout=self._settings.ollama_timeout_seconds,
+                ) as r:
+                    r.raise_for_status()
+                    async for line in r.aiter_lines():
+                        if not line.strip():
+                            continue
+                        chunk = json.loads(line)
+                        message = chunk.get("message", {})
+                        thinking = message.get("thinking", "")
+                        if thinking:
+                            yield "thinking", thinking
+                        text = message.get("content", "")
+                        if text:
+                            yield "content", text
+                        if chunk.get("done"):
+                            if on_usage is not None:
+                                on_usage(_usage_from(chunk))
+                            return
+            except (httpx.HTTPError, ValueError) as exc:
+                raise UpstreamServiceError("Ollama", str(exc)) from exc

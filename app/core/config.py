@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3.5:2b-q4_K_M"
     ollama_timeout_seconds: float = 120.0
+    # Llamadas simultáneas al modelo en este proceso. Con recursos limitados, más peticiones a la vez
+    # solo reparten la misma CPU/RAM y acaban todas en timeout: el resto espera su turno.
+    ollama_max_concurrent: int = 2
+    # Espera máxima por una plaza libre antes de responder 503 (modelo ocupado).
+    ollama_queue_timeout_seconds: float = 60.0
 
     # Días que se conservan los registros de consumo (usage_events). 0 = no borrar.
     usage_retention_days: int = 90

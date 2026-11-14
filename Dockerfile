@@ -15,7 +15,7 @@ COPY app ./app
 RUN useradd --uid 1000 --create-home appuser
 USER appuser
 
-# Con network_mode: host (ver docker-compose.yml) API_PORT se abre directamente en el host.
+# Sin puertos publicados: solo es accesible desde las redes Docker del compose (ver docker-compose.yml).
 CMD ["sh", "-c", "uvicorn app.main:app --host ${API_HOST:-127.0.0.1} --port ${API_PORT:-8000}"]
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

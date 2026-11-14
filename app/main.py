@@ -12,7 +12,7 @@ import app.models  # noqa: F401  registra los modelos en Base.metadata
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.database import create_db, init_schema
-from app.core.exceptions import ConversationNotFoundError, UpstreamServiceError
+from app.core.exceptions import ConversationNotFoundError, ModelBusyError, UpstreamServiceError
 from app.repositories.conversation_repository import ConversationRepository
 from app.services.redis_service import create_redis_client
 
@@ -35,6 +35,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.session_factory = session_factory
     # Límite compartido por todas las peticiones: los servicios se crean por petición.
     app.state.verify_slots = asyncio.Semaphore(max(1, settings.verification_max_concurrent))
+    app.state.model_slots = asyncio.Semaphore(max(1, settings.ollama_max_concurrent))
     try:
         yield
     finally:
@@ -59,11 +60,22 @@ if settings.cors_origins:
     )
 
 
+@app.exception_handler(ModelBusyError)
+async def model_busy_handler(request: Request, exc: ModelBusyError) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "El modelo está ocupado. Inténtalo de nuevo en unos segundos."},
+        headers={"Retry-After": "10"},
+    )
+
+
 @app.exception_handler(UpstreamServiceError)
 async def upstream_error_handler(request: Request, exc: UpstreamServiceError) -> JSONResponse:
+    # El detalle interno (URL, error de red) va al log, no a la respuesta.
+    logging.getLogger(__name__).warning("Fallo en %s: %s", exc.service, exc.detail)
     return JSONResponse(
         status_code=502,
-        content={"detail": f"Error en el servicio {exc.service}: {exc.detail}"},
+        content={"detail": f"Error en el servicio {exc.service}"},
     )
 
 

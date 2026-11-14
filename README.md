@@ -4,13 +4,15 @@ API FastAPI que reutiliza la infraestructura existente del servidor: Ollama, Sea
 
 ## Direcciones de conexión
 
-Con `network_mode: host`, la API corre en el mismo espacio de red que el servidor, así que los servicios existentes se usan por `127.0.0.1`:
+El contenedor **no** usa `network_mode: host` ni publica puertos: se une a las redes Docker de los servicios que usa (ver `docker-compose.yml`) y solo el servidor de Lumia le habla, desde la red `server_lumia-network`.
 
-| Servicio | Dirección | Variable |
+| Servicio | Dirección típica en Docker | Variable |
 |---|---|---|
-| Ollama | http://127.0.0.1:11434 | `OLLAMA_BASE_URL` |
-| SearXNG | http://127.0.0.1:7080 | `SEARXNG_BASE_URL` |
-| Redis | 127.0.0.1:6379 | `REDIS_HOST`, `REDIS_PORT` |
+| Ollama (host, systemd) | IP del puente de `server_lumia-network`, puerto 11434 | `OLLAMA_BASE_URL` |
+| SearXNG | `http://searxng-core:8080` (red `searxng_default`) | `SEARXNG_BASE_URL` |
+| Redis del servidor | `server-redis-1:6379` (red `server_lumia-network`) | `REDIS_HOST`, `REDIS_PORT` |
+
+Ejecutado directamente con Python en el host, los valores por defecto (`127.0.0.1`) siguen siendo válidos.
 
 Requisitos del servidor:
 - SearXNG debe tener `json` en `search.formats` de `settings.yml`.
@@ -200,5 +202,5 @@ pytest
 
 - Sin memoria a largo plazo ni resúmenes de conversaciones: Fase 4.
 - Sin migraciones Alembic todavía; las tablas se crean con `create_all`.
-- `network_mode: host` solo funciona en Linux.
-- Redis publicado en `0.0.0.0:6379` en el servidor: conviene limitarlo a `127.0.0.1`, porque afecta a otros servicios.
+- Llamadas al modelo limitadas por proceso (`OLLAMA_MAX_CONCURRENT`, 2 por defecto). Si no hay plaza libre en `OLLAMA_QUEUE_TIMEOUT_SECONDS`, la API responde 503 (el servidor de Lumia lo muestra como "asistente no disponible").
+- El Redis del `docker-compose.yml` del servidor no tiene contraseña; solo es accesible dentro de la red Docker. Si se publica fuera, configurar `requirepass` y `REDIS_PASSWORD`.

@@ -7,6 +7,13 @@ class UpstreamServiceError(Exception):
         super().__init__(f"{service}: {detail}")
 
 
+class ModelBusyError(UpstreamServiceError):
+    """Todas las plazas del modelo están ocupadas y la espera superó el límite."""
+
+    def __init__(self) -> None:
+        super().__init__("Ollama", "modelo ocupado")
+
+
 class ConversationNotFoundError(Exception):
     def __init__(self, conversation_id: str) -> None:
         self.conversation_id = conversation_id

@@ -1,5 +1,3 @@
-import asyncio
-
 from fastapi import APIRouter, Depends
 
 from app.core.dependencies import get_assistant_service

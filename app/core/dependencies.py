@@ -7,8 +7,13 @@ from app.services.research_service import ResearchService
 from app.services.search_service import SearchService
 
 
+def _ollama(state) -> OllamaService:
+    # Todas las llamadas al modelo comparten el semáforo del proceso (ver main.lifespan).
+    return OllamaService(state.settings, state.http, getattr(state, "model_slots", None))
+
+
 def get_ollama_service(request: Request) -> OllamaService:
-    return OllamaService(request.app.state.settings, request.app.state.http)
+    return _ollama(request.app.state)
 
 
 def get_search_service(request: Request) -> SearchService:
@@ -24,7 +29,7 @@ def get_research_service(request: Request) -> ResearchService:
     return ResearchService(
         state.settings,
         SearchService(state.settings, state.http),
-        OllamaService(state.settings, state.http),
+        _ollama(state),
         state.http,
         verify_slots=state.verify_slots,
     )
@@ -34,7 +39,7 @@ def get_assistant_service(request: Request) -> AssistantService:
     state = request.app.state
     return AssistantService(
         state.settings,
-        OllamaService(state.settings, state.http),
+        _ollama(state),
         ConversationRepository(state.session_factory),
         get_research_service(request),
     )
