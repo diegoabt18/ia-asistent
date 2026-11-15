@@ -16,6 +16,9 @@ class ChatRequest(BaseModel):
     think: bool = False
     # Datos de solo lectura de la pantalla del administrador. Va al prompt y NO se guarda en el historial.
     context: str | None = Field(default=None, max_length=2000)
+    # Qué puede hacer el sistema por este usuario. Lo escribe el servidor de Lumia (nunca el navegador)
+    # y va en el prompt de sistema. No se guarda en el historial.
+    capabilities: str | None = Field(default=None, max_length=2000)
 
 
 class ChatResponse(BaseModel):

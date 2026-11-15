@@ -61,7 +61,7 @@ Swagger: http://127.0.0.1:8000/docs
 | GET | `/api/v1/health` | No | Estado de la API |
 | GET | `/api/v1/health/dependencies` | Sí | Estado de Redis, Ollama y SearXNG |
 | GET | `/api/v1/models` | Sí | Modelos de Ollama y disponibilidad del configurado |
-| POST | `/api/v1/chat` | Sí + usuario | Responde y guarda el turno. Con `use_web: true` busca en la web antes |
+| POST | `/api/v1/chat` | Sí + usuario | Responde y guarda el turno. Con `use_web: true` busca en la web antes. `context` (datos de pantalla) y `capabilities` (qué puede hacer el sistema, lo envía el servidor de Lumia) van al prompt y no se guardan |
 | POST | `/api/v1/chat/stream` | Sí + usuario | Igual que `/chat`, en streaming SSE |
 | POST | `/api/v1/research` | Sí + usuario | Investiga una pregunta y devuelve respuesta con fuentes |
 | GET | `/api/v1/conversations` | Sí + usuario | Lista las conversaciones del usuario (`limit`, `offset`) |

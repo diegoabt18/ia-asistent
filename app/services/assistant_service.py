@@ -12,7 +12,7 @@ from app.prompts.research_prompts import (
     normalize_no_info,
     research_system_prompt,
 )
-from app.prompts.system_prompts import SYSTEM_PROMPT
+from app.prompts.system_prompts import SYSTEM_PROMPT, chat_system_prompt
 from app.repositories.conversation_repository import ConversationRepository
 from app.schemas.research import ResearchSource
 from app.services.ollama_service import ModelUsage, OllamaService
@@ -135,9 +135,10 @@ class AssistantService:
         message: str,
         use_web: bool,
         context: str | None = None,
+        capabilities: str | None = None,
     ) -> tuple[list[dict[str, str]], list[PageDocument]]:
         documents: list[PageDocument] = []
-        system_prompt = SYSTEM_PROMPT
+        system_prompt = chat_system_prompt(capabilities)
         user_content = message
 
         history: list[tuple[str, str]] = []
@@ -172,11 +173,14 @@ class AssistantService:
         use_web: bool = False,
         context: str | None = None,
         think: bool = False,
+        capabilities: str | None = None,
     ) -> ChatResult:
         if conversation_id is not None:
             await self.validate_conversation(conversation_id, user_ref)
         conv_id = conversation_id or str(uuid.uuid4())
-        messages, documents = await self._prepare(conversation_id, user_ref, message, use_web, context)
+        messages, documents = await self._prepare(
+            conversation_id, user_ref, message, use_web, context, capabilities
+        )
 
         completion = await self._ollama.chat(
             messages, temperature, effective_max_tokens(max_tokens, think), think=think
@@ -230,6 +234,7 @@ class AssistantService:
         use_web: bool = False,
         context: str | None = None,
         think: bool = False,
+        capabilities: str | None = None,
     ) -> AsyncIterator[tuple[str, dict]]:
         """Emite eventos (evento, datos). Si el cliente se desconecta, no se guarda el turno.
 
@@ -243,7 +248,9 @@ class AssistantService:
         usages: list[ModelUsage] = []
         documents: list[PageDocument] = []
         try:
-            messages, documents = await self._prepare(conversation_id, user_ref, message, use_web, context)
+            messages, documents = await self._prepare(
+                conversation_id, user_ref, message, use_web, context, capabilities
+            )
             if use_web:
                 yield "sources", {"sources": [s.model_dump() for s in to_sources(documents, [])]}
             async for kind, piece in self._ollama.chat_stream(
