@@ -205,3 +205,21 @@ pytest
 - Sin migraciones Alembic todavía; las tablas se crean con `create_all`.
 - Llamadas al modelo limitadas por proceso (`OLLAMA_MAX_CONCURRENT`, 2 por defecto). Si no hay plaza libre en `OLLAMA_QUEUE_TIMEOUT_SECONDS`, la API responde 503 (el servidor de Lumia lo muestra como "asistente no disponible").
 - El Redis del `docker-compose.yml` del servidor no tiene contraseña; solo es accesible dentro de la red Docker. Si se publica fuera, configurar `requirepass` y `REDIS_PASSWORD`.
+
+## Banco del selector (`bench/`)
+
+Mide el selector con el **mismo prompt que producción** contra un Ollama real. Bancos:
+- `bench/cases.json` (entrenamiento, se usa para ajustar);
+- `bench/validation.json` (validación, nunca se ajusta con él);
+- `bench/control.json` (frases reales del equipo, solo para medir).
+
+```bash
+python -m bench.run --base-url http://HOST:11434 --model qwen3.5:2b-q4_K_M --cases bench/validation.json --skip-cancel
+```
+
+- `--knowledge bench/knowledge.json` aplica interpretaciones aprendidas (fase F de Lumi):
+  - una coincidencia exacta se resuelve sin modelo;
+  - hasta 3 parecidas van como ejemplos al selector.
+
+  `bench/knowledge.json` se escribe **solo** con frases de entrenamiento; una prueba (`tests/test_bench_learning.py`) impide que contenga frases de validación o de control. Para medir el efecto del aprendizaje, ejecuta el mismo banco con y sin `--knowledge` y compara el acierto, la herramienta falsa y la latencia.
+- El informe (`bench/results/*.md`) incluye las métricas de seguridad (herramienta falsa ≤ 5 %, capacidades que faltan detectadas), las llamadas al modelo por cada 100 mensajes y la latencia p50/p95.

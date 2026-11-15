@@ -1,0 +1,14 @@
+[
+  { "phrase": "¿qué productos se están agotando?", "tool": "inventory.low", "source": "prod-10" },
+  { "phrase": "¿qué me falta reponer?", "tool": "inventory.low", "source": "prod-14" },
+  { "phrase": "qué hay que reponer en bodega", "tool": "inventory.low", "source": "variante de prod-14" },
+  { "phrase": "¿Por qué bajaron mis ventas esta semana?", "tool": "sales.summary", "source": "sal-06" },
+  { "phrase": "aprobaciones de costeo pendientes", "tool": "production.approvals.pending", "source": "pro-03" },
+  { "phrase": "lista de cambios de precio por revisar", "tool": "production.approvals.pending", "source": "pro-05" },
+  { "phrase": "recetas que esperan aprobación", "tool": "production.approvals.pending", "source": "variante de pro-03" },
+  { "phrase": "¿cómo va mi pedido?", "tool": "orders.lookup", "source": "inc-01" },
+  { "phrase": "busca el pedido", "tool": "orders.lookup", "source": "inc-10" },
+  { "phrase": "en qué va la orden", "tool": "orders.lookup", "source": "variante de inc-01" },
+  { "phrase": "¿cuánto stock queda?", "tool": "products.stock", "source": "inc-07" },
+  { "phrase": "cuántas unidades quedan", "tool": "products.stock", "source": "variante de inc-07" }
+]

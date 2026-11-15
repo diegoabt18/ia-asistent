@@ -30,6 +30,7 @@ from pathlib import Path
 import httpx
 
 from bench.catalog import output_schema
+from bench.learning import Knowledge
 from bench.rules import finalize, normalize_selection, route_rules
 from bench.selector import Selection, build_messages, normalize, parse_selection, score_case
 
@@ -98,8 +99,22 @@ def percentile(values: list[float], p: float) -> float:
 async def run_cases(client: httpx.AsyncClient, cases: list[dict], args: argparse.Namespace, concurrency: int) -> list[dict]:
     slots = asyncio.Semaphore(concurrency)
 
+    knowledge: Knowledge | None = getattr(args, "knowledge_data", None)
+
     async def one(case: dict) -> dict:
         message, context = case["message"], case.get("context")
+        # Fase F: interpretación aprendida para la frase exacta, antes que las reglas y sin modelo.
+        learned_tool = knowledge.exact(message) if knowledge else None
+        if learned_tool:
+            learned = normalize_selection(message, context, Selection(None, [{"tool": learned_tool, "args": {}}], [], None, status="tool"))
+            score = score_case(case["expected"], learned)
+            return {
+                "id": case["id"], "category": case["category"], "message": message, "expected": case["expected"],
+                "source": "aprendido",
+                "got": {"domain": learned.domain, "status": learned.status, "intents": learned.intents, "missing": learned.missing},
+                "raw": "", "score": {**asdict(score), "correct": score.correct}, "model_score": None,
+                "latency_ms": 0.0, "prompt_tokens": 0, "completion_tokens": 0, "error": None, "examples": 0,
+            }
         # Nivel 0: hora, clima e internet sin modelo.
         routed = route_rules(message, context)
         if routed is not None:
@@ -109,9 +124,10 @@ async def run_cases(client: httpx.AsyncClient, cases: list[dict], args: argparse
                 "source": "reglas",
                 "got": {"domain": routed.domain, "status": routed.status, "intents": routed.intents, "missing": routed.missing},
                 "raw": "", "score": {**asdict(score), "correct": score.correct}, "model_score": None,
-                "latency_ms": 0.0, "prompt_tokens": 0, "completion_tokens": 0, "error": None,
+                "latency_ms": 0.0, "prompt_tokens": 0, "completion_tokens": 0, "error": None, "examples": 0,
             }
-        messages = build_messages(message, context, BENCH_TODAY)
+        examples = knowledge.examples(message) if knowledge else []
+        messages = build_messages(message, context, BENCH_TODAY, examples)
         async with slots:
             result = await call_model(client, messages, args)
         raw = parse_selection(result.raw) if not result.error else Selection(None, [], [], None, [result.error])
@@ -134,6 +150,7 @@ async def run_cases(client: httpx.AsyncClient, cases: list[dict], args: argparse
             "prompt_tokens": result.prompt_tokens,
             "completion_tokens": result.completion_tokens,
             "error": result.error,
+            "examples": len(examples),
         }
 
     return list(await asyncio.gather(*(one(c) for c in cases)))
@@ -223,7 +240,10 @@ def summarize(results: list[dict]) -> dict:
         "json_valid_rate": round(sum(r["score"]["json_valid"] for r in results) / total, 4) if total else 0,
         "errors": sum(1 for r in results if r["error"]),
         "resolved_by_rules": sum(1 for r in results if r["source"] == "reglas"),
+        "resolved_by_learning": sum(1 for r in results if r["source"] == "aprendido"),
         "model_calls": len(by_model),
+        "model_calls_per_100": round(100 * len(by_model) / total, 1) if total else 0,
+        "calls_with_examples": sum(1 for r in by_model if r.get("examples")),
         "model_only_accuracy": round(sum(r["model_score"]["correct"] for r in by_model) / len(by_model), 4) if by_model else 0,
         "latency_p50_ms": round(percentile(latencies, 0.5), 1),
         "latency_p95_ms": round(percentile(latencies, 0.95), 1),
@@ -248,7 +268,7 @@ def markdown_report(meta: dict, summary: dict, concurrency: dict | None, cancel:
         "",
         f"- Fecha: {meta['started_at']} · Ollama: {meta['base_url']} · num_ctx {meta['num_ctx']} · think {'no enviado' if meta['omit_think'] else 'false'}",
         f"- Casos: {summary['cases']} · **Acierto del sistema (reglas + modelo + normalización): {summary['accuracy']:.1%}** (meta ≥ 90 %)",
-        f"- Resueltos por reglas sin modelo: {summary['resolved_by_rules']} · Llamadas al modelo: {summary['model_calls']} · Acierto del modelo solo (sin normalizar): {summary['model_only_accuracy']:.1%}",
+        f"- Resueltos por reglas sin modelo: {summary['resolved_by_rules']} · Por lo aprendido: {summary.get('resolved_by_learning', 0)} · Llamadas al modelo: {summary['model_calls']} ({summary.get('model_calls_per_100', 0):.0f} por cada 100 mensajes; {summary.get('calls_with_examples', 0)} con ejemplos aprendidos) · Acierto del modelo solo (sin normalizar): {summary['model_only_accuracy']:.1%}",
         f"- Intención correcta: {summary['intent_accuracy']:.1%} · Dominio: {summary['domain_accuracy']:.1%} · JSON válido: {summary['json_valid_rate']:.1%} · Errores: {summary['errors']}",
         f"- **Herramienta falsa: {summary['false_tool_rate']:.1%}** de {summary['no_tool_cases']} casos sin herramienta (objetivo ≤ 5 %) · Capacidades que faltan detectadas: {summary['missing_detection']:.1%} de {summary['missing_cases']} · Estado correcto: {summary['status_accuracy']:.1%}",
         f"- Latencia de las llamadas al modelo p50 / p95: {summary['latency_p50_ms']:.0f} / {summary['latency_p95_ms']:.0f} ms",
@@ -287,6 +307,8 @@ async def main_async(args: argparse.Namespace) -> int:
         print("No hay casos que ejecutar.")
         return 1
 
+    args.knowledge_data = Knowledge.load(args.knowledge) if args.knowledge else None
+
     async with httpx.AsyncClient() as client:
         tags = (await client.get(f"{args.base_url}/api/tags", timeout=10)).json()
         names = [m["name"] for m in tags.get("models", [])]
@@ -302,7 +324,7 @@ async def main_async(args: argparse.Namespace) -> int:
         summary = summarize(results)
         print(
             f"Sistema: {summary['correct']}/{summary['cases']} correctos ({summary['accuracy']:.1%}) · "
-            f"modelo solo {summary['model_only_accuracy']:.1%} · reglas {summary['resolved_by_rules']} · "
+            f"modelo solo {summary['model_only_accuracy']:.1%} · reglas {summary['resolved_by_rules']} · aprendido {summary['resolved_by_learning']} · "
             f"herramienta falsa {summary['false_tool_rate']:.1%} · faltantes detectadas {summary['missing_detection']:.1%} · "
             f"p50 {summary['latency_p50_ms']:.0f} ms, p95 {summary['latency_p95_ms']:.0f} ms"
         )
@@ -341,9 +363,10 @@ async def main_async(args: argparse.Namespace) -> int:
         "started_at": started,
         "bench_today": BENCH_TODAY.isoformat(),
         "warmup_load_ms": warm.load_ms,
+        "knowledge": str(args.knowledge) if args.knowledge else None,
     }
     RESULTS_DIR.mkdir(exist_ok=True)
-    suffix = "" if args.cases == CASES_FILE else f"-{args.cases.stem}"
+    suffix = ("" if args.cases == CASES_FILE else f"-{args.cases.stem}") + ("-aprendido" if args.knowledge else "")
     stem = f"{datetime.now():%Y%m%d-%H%M%S}-{args.model.replace(':', '_').replace('/', '_')}{suffix}"
     (RESULTS_DIR / f"{stem}.json").write_text(
         json.dumps({"meta": meta, "summary": summary, "concurrency": concurrency, "cache": cache, "cancel": cancel, "results": results}, ensure_ascii=False, indent=1),
@@ -368,6 +391,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--cases", type=Path, default=CASES_FILE, help="archivo de casos (por defecto bench/cases.json; control: bench/control.json)")
     p.add_argument("--skip-cancel", action="store_true")
     p.add_argument("--omit-think", action="store_true")
+    p.add_argument(
+        "--knowledge",
+        type=Path,
+        default=None,
+        help="interpretaciones aprendidas (bench/knowledge.json): coincidencia exacta sin modelo y ejemplos parecidos para el selector",
+    )
     return p.parse_args(argv)
 
 

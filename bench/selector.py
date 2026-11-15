@@ -25,14 +25,15 @@ def context_line(context: dict | None) -> str | None:
     return f"último {entity['type']} mencionado: {entity['name']}" if entity else None
 
 
-def user_prompt(message: str, context: dict | None = None) -> str:
-    return build_user_prompt(message, context_line(context))
+def user_prompt(message: str, context: dict | None = None, examples: list[dict] | tuple = ()) -> str:
+    return build_user_prompt(message, context_line(context), examples)
 
 
-def build_messages(message: str, context: dict | None, today: date) -> list[dict[str, str]]:
+def build_messages(message: str, context: dict | None, today: date, examples: list[dict] | tuple = ()) -> list[dict[str, str]]:
+    """`examples`: interpretaciones aprendidas parecidas (fase F), como las envía el Server a /select."""
     return [
         {"role": "system", "content": system_prompt(today)},
-        {"role": "user", "content": user_prompt(message, context)},
+        {"role": "user", "content": user_prompt(message, context, examples)},
     ]
 
 
