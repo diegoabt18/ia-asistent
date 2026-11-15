@@ -82,8 +82,9 @@ def test_the_prompt_lists_every_intent_and_stays_small_and_static() -> None:
 
 def test_output_schema_is_the_production_one() -> None:
     schema = output_schema()
-    assert schema["required"] == ["status", "intents", "need", "module"]
-    assert schema["properties"]["status"]["enum"] == ["tool", "chat", "missing", "ambiguous"]
+    assert schema["required"] == ["module", "status", "intents", "need"]
+    assert schema["properties"]["status"]["enum"] == ["tool", "chat", "no_tool", "ambiguous"]
+    assert list(schema["properties"])[0] == "module"
     assert set(schema["properties"]["intents"]["items"]["properties"]["tool"]["enum"]) == set(INTENTS_BY_NAME)
     assert schema["properties"]["intents"]["maxItems"] == 2
 
@@ -274,6 +275,9 @@ def test_reminder_dates_and_texts_come_from_the_message() -> None:
     assert got.intents[0]["args"] == {"when": "el viernes a las 3 de la tarde", "text": "hacer inventario", "repeat": "none"}
     got = norm("avísame en dos horas que tengo que cerrar caja", [])
     assert got.intents[0]["args"]["when"] == "en dos horas" and got.intents[0]["args"]["text"] == "cerrar caja"
+    # "algo" no dice qué recordar, aunque el modelo lo proponga: se pregunta.
+    got = norm("recuérdame algo el jueves", [{"tool": "reminders.create", "args": {"text": "algo", "when": "el jueves"}}])
+    assert "text" in got.missing
 
 
 def test_period_words_keep_analytics_out_of_reminders() -> None:

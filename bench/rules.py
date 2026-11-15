@@ -114,6 +114,9 @@ GENERIC_WORDS = frozenset(
     "del al a y o que cuanto cuanta cuantos cuantas queda quedan hay tiene tengo para por con en sin me te se le les nos".split()
 )
 
+# Ni siquiera en el texto de un recordatorio dicen qué recordar ("recuérdame algo para el lunes").
+VAGUE_WORDS = frozenset("algo cosa cosas eso esto aquello".split())
+
 ENTITY_TOOLS = {
     "products.stock": ("producto", "query"),
     "products.set_active": ("producto", "name"),
@@ -171,7 +174,11 @@ def grounded(value: object, text: str, entity_name: str = "", generic_ok: bool =
     que el usuario no dijo. `generic_ok`: para el texto de un recordatorio, "pedidos" sí dice algo."""
     if not isinstance(value, str):
         return False
-    words = [w for w in normalize(value).split() if len(w) >= 4] if generic_ok else content_words(value)
+    words = (
+        [w for w in normalize(value).split() if len(w) >= 4 and w not in VAGUE_WORDS]
+        if generic_ok
+        else content_words(value)
+    )
     source = text.split() + normalize(entity_name).split()
     return any(same_word(word, other) for word in words for other in source)
 

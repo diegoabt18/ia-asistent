@@ -68,10 +68,14 @@ def test_select_sends_the_catalog_and_a_closed_schema_and_records_usage(make_ser
 
 
 def test_missing_capability_keeps_need_and_module(make_service) -> None:
-    answer = json.dumps({"status": "missing", "intents": [], "need": "reseñas negativas", "module": "clientes"})
+    # El modelo dice "no_tool"; el contrato con el Server sigue siendo "missing".
+    answer = json.dumps({"module": "clientes", "status": "no_tool", "intents": [], "need": "reseñas negativas"})
     svc, _, _ = make_service(answer)
     result = asyncio.run(svc.select("user-sel", request("muéstrame las reseñas malas")))
     assert (result.status, result.need, result.module) == ("missing", "reseñas negativas", "clientes")
+    # Las salidas con la etiqueta anterior (informes v4) se siguen leyendo.
+    legacy, errors = parse_output(json.dumps({"status": "missing", "intents": [], "need": "x", "module": "clientes"}), ["orders.count"], MODULES)
+    assert legacy["status"] == "missing" and errors == []
 
 
 def test_bad_model_output_never_raises() -> None:
@@ -83,10 +87,10 @@ def test_bad_model_output_never_raises() -> None:
 def test_prompt_only_mentions_tools_and_examples_of_the_catalog_sent() -> None:
     prompt = build_system_prompt(TOOLS, MODULES)
     assert "products.stock" not in prompt and "reminders.create" not in prompt
-    assert "products.search" in prompt and '"status":"missing"' in prompt
+    assert "products.search" in prompt and '"status":"no_tool"' in prompt and '"missing"' not in prompt
     # Mismo catálogo → mismo prompt (estático entre llamadas).
     assert prompt == build_system_prompt(TOOLS, MODULES)
-    assert output_schema(["a.b"], ["x"])["required"] == ["status", "intents", "need", "module"]
+    assert output_schema(["a.b"], ["x"])["required"] == ["module", "status", "intents", "need"]
 
 
 def test_user_examples_and_context_go_in_the_user_message(make_service) -> None:

@@ -59,7 +59,7 @@ INTENTS: tuple[Intent, ...] = (
     Intent("products.stock", "Existencias de un producto concreto", {
         "query": Arg("str", True, "nombre del producto; si dice 'ese' o 'este', el del contexto"),
     }),
-    Intent("inventory.low", "Productos sin stock o con poco stock"),
+    Intent("inventory.low", "Productos agotados, sin stock, con poco stock o por reponer"),
     Intent("orders.lookup", "Estado de un pedido por su referencia (ORD-...)", {
         "reference": Arg("str", True, "referencia tal como la escribe el usuario"),
     }),
