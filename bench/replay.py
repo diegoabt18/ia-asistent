@@ -5,7 +5,7 @@ cambian las reglas el resultado sin repetir la medición en el ThinkCentre. No s
 medición nueva: si el prompt cambia, las respuestas del modelo también.
 
 Uso:
-    python -m bench.replay bench/results/<informe>.json
+    python -m bench.replay bench/results/<informe>.json [--cases bench/control.json]
 """
 
 from __future__ import annotations
@@ -16,12 +16,12 @@ from collections import Counter
 from pathlib import Path
 
 from bench.rules import normalize_selection, route_rules
-from bench.run import load_cases
+from bench.run import CASES_FILE, load_cases
 from bench.selector import Selection, parse_selection, score_case
 
 
-def replay(report: dict) -> list[dict]:
-    cases = {case["id"]: case for case in load_cases()}
+def replay(report: dict, cases_path: Path = CASES_FILE) -> list[dict]:
+    cases = {case["id"]: case for case in load_cases(cases_path)}
     rows = []
     for result in report["results"]:
         case = cases.get(result["id"])
@@ -49,8 +49,9 @@ def replay(report: dict) -> list[dict]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("report", type=Path)
+    parser.add_argument("--cases", type=Path, default=CASES_FILE)
     args = parser.parse_args()
-    rows = replay(json.loads(args.report.read_text(encoding="utf-8")))
+    rows = replay(json.loads(args.report.read_text(encoding="utf-8")), args.cases)
     total = len(rows)
     now = sum(r["correct"] for r in rows)
     before = sum(r["before"] for r in rows)

@@ -249,7 +249,7 @@ def markdown_report(meta: dict, summary: dict, concurrency: dict | None, cancel:
 
 
 async def main_async(args: argparse.Namespace) -> int:
-    cases = load_cases()
+    cases = load_cases(args.cases)
     if args.category:
         cases = [c for c in cases if c["category"] == args.category]
     if args.limit:
@@ -313,7 +313,8 @@ async def main_async(args: argparse.Namespace) -> int:
         "warmup_load_ms": warm.load_ms,
     }
     RESULTS_DIR.mkdir(exist_ok=True)
-    stem = f"{datetime.now():%Y%m%d-%H%M%S}-{args.model.replace(':', '_').replace('/', '_')}"
+    suffix = "" if args.cases == CASES_FILE else f"-{args.cases.stem}"
+    stem = f"{datetime.now():%Y%m%d-%H%M%S}-{args.model.replace(':', '_').replace('/', '_')}{suffix}"
     (RESULTS_DIR / f"{stem}.json").write_text(
         json.dumps({"meta": meta, "summary": summary, "concurrency": concurrency, "cache": cache, "cancel": cancel, "results": results}, ensure_ascii=False, indent=1),
         encoding="utf-8",
@@ -334,6 +335,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--concurrency", type=int, default=1)
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--category", default="")
+    p.add_argument("--cases", type=Path, default=CASES_FILE, help="archivo de casos (por defecto bench/cases.json; control: bench/control.json)")
     p.add_argument("--skip-cancel", action="store_true")
     p.add_argument("--omit-think", action="store_true")
     return p.parse_args(argv)

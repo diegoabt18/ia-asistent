@@ -161,6 +161,13 @@ def score_case(expected: dict, selection: Selection) -> Score:
     want_tools = sorted(i["tool"] for i in expected.get("intents", []))
     got_tools = sorted(i["tool"] for i in selection.intents)
     intent_ok = want_tools == got_tools
+    # Frases ambiguas: otras combinaciones de herramientas también razonables (sus argumentos
+    # solo se validan contra el catálogo).
+    alternative = next((sorted(alt) for alt in expected.get("accept", []) if sorted(alt) == got_tools), None)
+    if not intent_ok and alternative is not None:
+        errors = [e for i in selection.intents for e in validate_args(i["tool"], i["args"]) if not e.startswith("falta ")]
+        notes.extend(errors)
+        return Score(selection.valid, domain_ok, True, not errors, True, notes)
     if not intent_ok:
         notes.append(f"intenciones {got_tools} ≠ {want_tools}")
 

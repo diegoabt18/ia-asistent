@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 from collections import Counter
 from datetime import date
 
@@ -272,3 +273,24 @@ def test_scoring_accepts_the_same_stem_but_not_different_numbers() -> None:
     assert value_matches("revisa pedidos", "revisar todos los pedidos")
     assert value_matches("despachar", "despacharlos")
     assert not value_matches("9", "19") and not value_matches("vela", "venta")
+
+
+# ------------------------------------------------------------------ conjunto de control (frases del usuario)
+
+CONTROL = load_cases(Path(__file__).resolve().parents[1] / "bench" / "control.json")
+
+
+def test_control_cases_are_valid_and_the_rules_never_spoil_a_perfect_answer() -> None:
+    assert len({c["id"] for c in CONTROL}) == len(CONTROL)
+    for case in CONTROL:
+        for intent in case["expected"]["intents"]:
+            errors = [e for e in validate_args(intent["tool"], intent["args"]) if not e.startswith("falta ")]
+            assert not errors, (case["id"], errors)
+        score = score_case(case["expected"], system(case, answer(case)))
+        assert score.correct, (case["id"], score.notes)
+
+
+def test_accepted_alternatives_count_as_correct_but_unlisted_ones_do_not() -> None:
+    expected = {"domain": "lumia_op", "intents": [{"tool": "dashboard.today", "args": {}}], "accept": [["initiatives.list"]]}
+    assert score_case(expected, parse_selection(json.dumps({"intents": [{"tool": "initiatives.list", "args": {}}]}))).correct
+    assert not score_case(expected, parse_selection(json.dumps({"intents": [{"tool": "orders.recent", "args": {}}]}))).correct
