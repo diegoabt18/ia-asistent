@@ -17,7 +17,7 @@
 
   {"id": "amb-01", "category": "busqueda_ambigua", "message": "vela", "expected": {"domain": "lumia_op", "intents": [{"tool": "products.search", "args": {"query": "vela"}}]}},
   {"id": "amb-02", "category": "busqueda_ambigua", "message": "lavanda", "expected": {"domain": "lumia_op", "intents": [{"tool": "products.search", "args": {"query": "lavanda"}}]}},
-  {"id": "amb-03", "category": "busqueda_ambigua", "message": "algo para regalar a mi mamá", "expected": {"domain": ["chat", "lumia_op"], "intents": []}},
+  {"id": "amb-03", "category": "busqueda_ambigua", "message": "algo para regalar a mi mamá", "expected": {"domain": ["chat", "lumia_op"], "intents": [], "status": "chat"}},
   {"id": "amb-04", "category": "busqueda_ambigua", "message": "las de soja", "expected": {"domain": "lumia_op", "intents": [{"tool": "products.search", "args": {"query": "soja"}}]}},
   {"id": "amb-05", "category": "busqueda_ambigua", "message": "velas grandes", "expected": {"domain": "lumia_op", "intents": [{"tool": "products.search", "args": {"query": "velas grandes"}}]}},
   {"id": "amb-06", "category": "busqueda_ambigua", "message": "lo de navidad", "expected": {"domain": "lumia_op", "intents": [{"tool": "products.search", "args": {"query": "navidad"}}]}},
@@ -96,18 +96,18 @@
   {"id": "rem-11", "category": "recordatorios", "message": "mañana a las 8 recuérdame comprar cera", "expected": {"domain": "automation", "intents": [{"tool": "reminders.create", "args": {"text": "comprar cera", "when": "mañana 8"}}]}},
   {"id": "rem-12", "category": "recordatorios", "message": "programa cada semana una revisión del inventario los viernes a las 4", "expected": {"domain": "automation", "intents": [{"tool": "reminders.create", "args": {"text": "inventario", "when": "4", "repeat": "weekly"}}]}},
 
-  {"id": "chat-01", "category": "conversacion", "message": "Hola, ¿cómo estás?", "expected": {"domain": "chat", "intents": []}},
-  {"id": "chat-02", "category": "conversacion", "message": "Explícame qué es la inteligencia artificial", "expected": {"domain": "chat", "intents": []}},
-  {"id": "chat-03", "category": "conversacion", "message": "Ayúdame a pensar un nombre para una vela de invierno", "expected": {"domain": "chat", "intents": []}},
-  {"id": "chat-04", "category": "conversacion", "message": "gracias!", "expected": {"domain": "chat", "intents": []}},
-  {"id": "chat-05", "category": "conversacion", "message": "¿qué puedes hacer?", "expected": {"domain": "chat", "intents": []}},
-  {"id": "chat-06", "category": "conversacion", "message": "redacta una respuesta amable para un cliente que pregunta por el envío", "expected": {"domain": "chat", "intents": []}},
-  {"id": "chat-07", "category": "conversacion", "message": "dame ideas para una promoción de san valentín", "expected": {"domain": "chat", "intents": []}},
-  {"id": "chat-08", "category": "conversacion", "message": "¿qué es un ticket promedio?", "expected": {"domain": "chat", "intents": []}},
-  {"id": "chat-09", "category": "conversacion", "message": "escribe una descripción corta para una vela de coco", "expected": {"domain": "chat", "intents": []}},
-  {"id": "chat-10", "category": "conversacion", "message": "estoy cansado, ha sido un día largo", "expected": {"domain": "chat", "intents": []}},
-  {"id": "chat-11", "category": "conversacion", "message": "¿cómo calculo el margen de un producto?", "expected": {"domain": "chat", "intents": []}},
-  {"id": "chat-12", "category": "conversacion", "message": "corrige la ortografía: las belas de lavanda son muy rricas", "expected": {"domain": "chat", "intents": []}},
+  {"id": "chat-01", "category": "conversacion", "message": "Hola, ¿cómo estás?", "expected": {"domain": "chat", "intents": [], "status": "chat"}},
+  {"id": "chat-02", "category": "conversacion", "message": "Explícame qué es la inteligencia artificial", "expected": {"domain": "chat", "intents": [], "status": "chat"}},
+  {"id": "chat-03", "category": "conversacion", "message": "Ayúdame a pensar un nombre para una vela de invierno", "expected": {"domain": "chat", "intents": [], "status": "chat"}},
+  {"id": "chat-04", "category": "conversacion", "message": "gracias!", "expected": {"domain": "chat", "intents": [], "status": "chat"}},
+  {"id": "chat-05", "category": "conversacion", "message": "¿qué puedes hacer?", "expected": {"domain": "chat", "intents": [], "status": "chat"}},
+  {"id": "chat-06", "category": "conversacion", "message": "redacta una respuesta amable para un cliente que pregunta por el envío", "expected": {"domain": "chat", "intents": [], "status": "chat"}},
+  {"id": "chat-07", "category": "conversacion", "message": "dame ideas para una promoción de san valentín", "expected": {"domain": "chat", "intents": [], "status": "chat"}},
+  {"id": "chat-08", "category": "conversacion", "message": "¿qué es un ticket promedio?", "expected": {"domain": "chat", "intents": [], "status": "chat"}},
+  {"id": "chat-09", "category": "conversacion", "message": "escribe una descripción corta para una vela de coco", "expected": {"domain": "chat", "intents": [], "status": "chat"}},
+  {"id": "chat-10", "category": "conversacion", "message": "estoy cansado, ha sido un día largo", "expected": {"domain": "chat", "intents": [], "status": "chat"}},
+  {"id": "chat-11", "category": "conversacion", "message": "¿cómo calculo el margen de un producto?", "expected": {"domain": "chat", "intents": [], "status": "chat"}},
+  {"id": "chat-12", "category": "conversacion", "message": "corrige la ortografía: las belas de lavanda son muy rricas", "expected": {"domain": "chat", "intents": [], "status": "chat"}},
 
   {"id": "ext-01", "category": "externas", "message": "¿Qué hora es?", "expected": {"domain": "external", "intents": [{"tool": "time.now", "args": {}}]}},
   {"id": "ext-02", "category": "externas", "message": "¿Qué clima hace hoy en Cúcuta?", "expected": {"domain": "external", "intents": [{"tool": "weather.get", "args": {"place": "cucuta", "day": "today"}}]}},
@@ -124,7 +124,7 @@
   {"id": "ctx-04", "category": "contexto", "context": {"last_entity": {"type": "pedido", "name": "ORD-CB07203E"}}, "message": "márcalo como enviado", "expected": {"domain": "lumia_action", "intents": [{"tool": "orders.mark_shipped", "args": {"reference": "ORD-CB07203E"}}]}},
   {"id": "ctx-05", "category": "contexto", "context": {"last_entity": {"type": "producto", "name": "Difusor Cítrico"}}, "message": "desactívalo", "expected": {"domain": "lumia_action", "intents": [{"tool": "products.set_active", "args": {"name": "difusor citrico", "active": false}}]}},
   {"id": "ctx-06", "category": "contexto", "context": {"last_entity": {"type": "producto", "name": "Lumi Vela"}}, "message": "ahora busca las de lavanda", "expected": {"domain": "lumia_op", "intents": [{"tool": "products.search", "args": {"query": "lavanda"}}]}},
-  {"id": "ctx-07", "category": "contexto", "context": {"last_entity": {"type": "pedido", "name": "ORD-CB07203E"}}, "message": "hola, gracias por la ayuda", "expected": {"domain": "chat", "intents": []}},
+  {"id": "ctx-07", "category": "contexto", "context": {"last_entity": {"type": "pedido", "name": "ORD-CB07203E"}}, "message": "hola, gracias por la ayuda", "expected": {"domain": "chat", "intents": [], "status": "chat"}},
   {"id": "ctx-08", "category": "contexto", "context": {"last_entity": {"type": "promoción", "name": "Navidad 2026"}}, "message": "páusala", "expected": {"domain": "lumia_action", "intents": [{"tool": "promotions.set_active", "args": {"name": "navidad 2026", "active": false}}]}},
 
   {"id": "act-01", "category": "acciones", "message": "marca el pedido ORD-CB07203E como enviado", "expected": {"domain": "lumia_action", "intents": [{"tool": "orders.mark_shipped", "args": {"reference": "ORD-CB07203E"}}]}},
@@ -133,6 +133,6 @@
   {"id": "act-04", "category": "acciones", "message": "desactiva el producto Vela Vieja", "expected": {"domain": "lumia_action", "intents": [{"tool": "products.set_active", "args": {"name": "vela vieja", "active": false}}]}},
   {"id": "act-05", "category": "acciones", "message": "activa otra vez la vela de coco", "expected": {"domain": "lumia_action", "intents": [{"tool": "products.set_active", "args": {"name": "coco", "active": true}}]}},
   {"id": "act-06", "category": "acciones", "message": "el pedido ORD-1A2B3C4D ya salió, márcalo enviado", "expected": {"domain": "lumia_action", "intents": [{"tool": "orders.mark_shipped", "args": {"reference": "ORD-1A2B3C4D"}}]}},
-  {"id": "act-07", "category": "acciones", "message": "borra todos los productos", "expected": {"domain": ["lumia_action", "chat"], "intents": []}},
-  {"id": "act-08", "category": "acciones", "message": "cambia el precio de la vela de lavanda a 50000", "expected": {"domain": ["lumia_action", "chat"], "intents": []}}
+  {"id": "act-07", "category": "acciones", "message": "borra todos los productos", "expected": {"domain": ["lumia_action", "chat"], "intents": [], "status": "missing"}},
+  {"id": "act-08", "category": "acciones", "message": "cambia el precio de la vela de lavanda a 50000", "expected": {"domain": ["lumia_action", "chat"], "intents": [], "status": "missing"}}
 ]

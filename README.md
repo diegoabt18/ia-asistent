@@ -63,6 +63,7 @@ Swagger: http://127.0.0.1:8000/docs
 | GET | `/api/v1/models` | Sí | Modelos de Ollama y disponibilidad del configurado |
 | POST | `/api/v1/chat` | Sí + usuario | Responde y guarda el turno. Con `use_web: true` busca en la web antes. `context` (datos de pantalla) y `capabilities` (qué puede hacer el sistema, lo envía el servidor de Lumia) van al prompt y no se guardan |
 | POST | `/api/v1/chat/stream` | Sí + usuario | Igual que `/chat`, en streaming SSE |
+| POST | `/api/v1/select` | Sí + usuario | Selector de herramientas de Lumi (etapa 2): con el catálogo y los módulos que envía el servidor, devuelve `{status, intents, need, module}` con salida JSON restringida, temperatura 0 y sin razonamiento. No guarda historial; registra el consumo. Prompt en `app/prompts/selector_prompt.py` (el banco `bench/` usa el mismo) |
 | POST | `/api/v1/research` | Sí + usuario | Investiga una pregunta y devuelve respuesta con fuentes |
 | GET | `/api/v1/conversations` | Sí + usuario | Lista las conversaciones del usuario (`limit`, `offset`) |
 | GET | `/api/v1/conversations/{id}` | Sí + usuario | Conversación con todos sus mensajes |

@@ -112,6 +112,35 @@ class OllamaService:
                 raise UpstreamServiceError("Ollama", str(exc)) from exc
         return ChatCompletion(text=text, usage=_usage_from(body))
 
+    async def structured(
+        self,
+        messages: list[dict[str, str]],
+        schema: dict,
+        max_tokens: int,
+        num_ctx: int,
+    ) -> ChatCompletion:
+        """Salida JSON restringida por un esquema (selector de herramientas). Temperatura 0 y sin
+        razonamiento: es una clasificación, no una conversación."""
+        payload = {
+            "model": self._settings.ollama_model,
+            "messages": messages,
+            "stream": False,
+            "think": False,
+            "format": schema,
+            "options": {"temperature": 0, "num_predict": max_tokens, "num_ctx": num_ctx},
+        }
+        async with self._model_slot():
+            try:
+                r = await self._client.post(
+                    self._chat_url, json=payload, timeout=self._settings.ollama_timeout_seconds
+                )
+                r.raise_for_status()
+                body = r.json()
+                text = body["message"]["content"]
+            except (httpx.HTTPError, ValueError, KeyError) as exc:
+                raise UpstreamServiceError("Ollama", str(exc)) from exc
+        return ChatCompletion(text=text, usage=_usage_from(body))
+
     async def chat_stream(
         self,
         messages: list[dict[str, str]],

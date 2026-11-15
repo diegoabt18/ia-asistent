@@ -5,62 +5,28 @@ Funciones puras: se prueban sin modelo (tests/test_bench.py).
 
 from __future__ import annotations
 
-import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
 
-from bench.catalog import INTENTS_BY_NAME, MAX_INTENTS, catalog_lines, validate_args
-
-SYSTEM_PROMPT = """Eres el clasificador de Lumi, el asistente del panel de administración de una tienda.
-No respondas al usuario. Devuelve SOLO un JSON {"intents": [...]} con 0 a 2 intenciones del catálogo.
-
-Reglas:
-- Si el mensaje nombra un producto, un aroma o un tipo de producto (vela, difusor, jabón, lavanda,
-  coco...), aunque sea una sola palabra o una pregunta como "¿tenemos...?", es products.search.
-  Si pregunta cuánto queda o cuántas unidades hay, es products.stock.
-- Saludos, conversación, redactar textos, dar ideas o preguntas generales: intents vacío.
-- Si pregunta por qué cambian sus ventas o pide compararlas, usa sales.summary igualmente.
-- args: solo los del catálogo, con los valores permitidos. Si falta un dato, omite el argumento.
-- "ese", "este", "lo", "la": usa la entidad del contexto.
-
-Catálogo:
-{catalog}
-
-Ejemplos:
-Mensaje: "hola, buenos días"
-{"intents":[]}
-Mensaje: "¿tienen velas de coco?"
-{"intents":[{"tool":"products.search","args":{"query":"velas de coco"}}]}
-Mensaje: "eucalipto"
-{"intents":[{"tool":"products.search","args":{"query":"eucalipto"}}]}
-Mensaje: "cuánto queda del jabón de miel"
-{"intents":[{"tool":"products.stock","args":{"query":"jabón de miel"}}]}
-Mensaje: "recuérdame el martes a las 4 de la tarde pagar la luz"
-{"intents":[{"tool":"reminders.create","args":{"text":"pagar la luz","when":"martes a las 4 de la tarde"}}]}
-Mensaje: "¿cuántos pedidos están por despachar?"
-{"intents":[{"tool":"orders.count","args":{"status":"paid"}}]}
-Mensaje: "en qué estado está la orden"
-{"intents":[{"tool":"orders.lookup","args":{}}]}
-"""
-
+from app.prompts.selector_prompt import build_system_prompt, build_user_prompt, parse_output
+from bench.catalog import INTENTS_BY_NAME, MODULES, tool_specs, validate_args
 
 def system_prompt(today: date | None = None) -> str:
-    """Prompt de sistema IDÉNTICO en todas las llamadas (sin fecha ni datos variables), para que
-    Ollama pueda reutilizar su caché de prefijo. Las fechas las interpreta el Server, no el modelo."""
-    return SYSTEM_PROMPT.replace("{catalog}", "\n".join(catalog_lines()))
+    """Prompt de producción (app/prompts/selector_prompt.py) con el catálogo del banco. Es estático:
+    sin fecha ni datos variables. Las fechas las interpreta el Server, no el modelo."""
+    return build_system_prompt(tool_specs(), MODULES)
+
+
+def context_line(context: dict | None) -> str | None:
+    """La línea de contexto que redacta el Server con la entidad activa."""
+    entity = (context or {}).get("last_entity")
+    return f"último {entity['type']} mencionado: {entity['name']}" if entity else None
 
 
 def user_prompt(message: str, context: dict | None = None) -> str:
-    """Mensaje del usuario con el contexto mínimo del turno anterior (lo que guardará el Server)."""
-    parts = []
-    if context:
-        entity = context.get("last_entity")
-        if entity:
-            parts.append(f"Contexto: último {entity['type']} mencionado: {entity['name']}")
-    parts.append(f'Mensaje: "{message}"')
-    return "\n".join(parts)
+    return build_user_prompt(message, context_line(context))
 
 
 def build_messages(message: str, context: dict | None, today: date) -> list[dict[str, str]]:
@@ -79,6 +45,10 @@ class Selection:
     missing: list[str]
     confidence: str | None
     errors: list[str] = field(default_factory=list)
+    # tool | chat | missing | ambiguous. Lo que propone el modelo; el Server fija el definitivo.
+    status: str = "chat"
+    need: str = ""
+    module: str = "none"
 
     @property
     def valid(self) -> bool:
@@ -86,28 +56,10 @@ class Selection:
 
 
 def parse_selection(raw: str) -> Selection:
-    """Interpreta el JSON del modelo. Nunca lanza: los problemas quedan en `errors`."""
-    try:
-        data = json.loads(raw)
-    except (TypeError, ValueError):
-        return Selection(None, [], [], None, ["JSON inválido"])
-    if not isinstance(data, dict):
-        return Selection(None, [], [], None, ["la raíz no es un objeto"])
-    errors = []
-    intents_raw = data.get("intents")
-    intents: list[dict] = []
-    if not isinstance(intents_raw, list):
-        errors.append("intents no es una lista")
-    else:
-        if len(intents_raw) > MAX_INTENTS:
-            errors.append(f"más de {MAX_INTENTS} intenciones")
-        for item in intents_raw[:MAX_INTENTS]:
-            if not isinstance(item, dict) or item.get("tool") not in INTENTS_BY_NAME:
-                errors.append(f"intención desconocida: {item!r}"[:120])
-                continue
-            intents.append({"tool": item["tool"], "args": item.get("args") if isinstance(item.get("args"), dict) else {}})
-    # El dominio y los datos que faltan los deduce el Server (bench/rules.py), no el modelo.
-    return Selection(None, intents, [], None, errors)
+    """Interpreta el JSON del modelo con el lector de producción. Nunca lanza: los problemas quedan
+    en `errors`. El dominio y los datos que faltan los deduce el Server (bench/rules.py)."""
+    selection, errors = parse_output(raw, INTENTS_BY_NAME, MODULES)
+    return Selection(None, selection["intents"], [], None, errors, selection["status"], selection["need"], selection["module"])
 
 
 # ---------------------------------------------------------------- puntuación
@@ -147,14 +99,19 @@ class Score:
     args_ok: bool
     missing_ok: bool
     notes: list[str]
+    # Solo cuenta si el caso indica el estado esperado (chat, missing…).
+    status_ok: bool = True
 
     @property
     def correct(self) -> bool:
-        return self.json_valid and self.intent_ok and self.args_ok and self.missing_ok
+        return self.json_valid and self.intent_ok and self.args_ok and self.missing_ok and self.status_ok
 
 
 def score_case(expected: dict, selection: Selection) -> Score:
     notes = list(selection.errors)
+    status_ok = "status" not in expected or selection.status == expected["status"]
+    if not status_ok:
+        notes.append(f"estado {selection.status!r} ≠ {expected['status']!r}")
     domains = expected["domain"] if isinstance(expected["domain"], list) else [expected["domain"]]
     domain_ok = selection.domain in domains
 
@@ -167,7 +124,7 @@ def score_case(expected: dict, selection: Selection) -> Score:
     if not intent_ok and alternative is not None:
         errors = [e for i in selection.intents for e in validate_args(i["tool"], i["args"]) if not e.startswith("falta ")]
         notes.extend(errors)
-        return Score(selection.valid, domain_ok, True, not errors, True, notes)
+        return Score(selection.valid, domain_ok, True, not errors, True, notes, status_ok)
     if not intent_ok:
         notes.append(f"intenciones {got_tools} ≠ {want_tools}")
 
@@ -197,4 +154,4 @@ def score_case(expected: dict, selection: Selection) -> Score:
     if not missing_ok:
         notes.append(f"missing {sorted(got_missing)} ≠ {sorted(expected_missing)}")
 
-    return Score(selection.valid, domain_ok, intent_ok, args_ok, missing_ok, notes)
+    return Score(selection.valid, domain_ok, intent_ok, args_ok, missing_ok, notes, status_ok)

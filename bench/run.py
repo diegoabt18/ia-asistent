@@ -107,7 +107,7 @@ async def run_cases(client: httpx.AsyncClient, cases: list[dict], args: argparse
             return {
                 "id": case["id"], "category": case["category"], "message": message, "expected": case["expected"],
                 "source": "reglas",
-                "got": {"domain": routed.domain, "intents": routed.intents, "missing": routed.missing},
+                "got": {"domain": routed.domain, "status": routed.status, "intents": routed.intents, "missing": routed.missing},
                 "raw": "", "score": {**asdict(score), "correct": score.correct}, "model_score": None,
                 "latency_ms": 0.0, "prompt_tokens": 0, "completion_tokens": 0, "error": None,
             }
@@ -126,7 +126,7 @@ async def run_cases(client: httpx.AsyncClient, cases: list[dict], args: argparse
             "message": case["message"],
             "expected": case["expected"],
             "source": "modelo",
-            "got": {"domain": selection.domain, "intents": selection.intents, "missing": selection.missing},
+            "got": {"domain": selection.domain, "status": selection.status, "intents": selection.intents, "missing": selection.missing, "need": selection.need, "module": selection.module},
             "raw": result.raw[:2000],
             "score": {**asdict(score), "correct": score.correct},
             "model_score": {**asdict(model_score), "correct": model_score.correct},
@@ -180,6 +180,32 @@ async def cancellation_test(client: httpx.AsyncClient, args: argparse.Namespace)
     }
 
 
+def expects_no_tool(case_expected: dict) -> bool:
+    """El caso espera que no se ejecute ninguna herramienta (y no admite una alternativa con herramientas)."""
+    return not case_expected.get("intents") and not any(case_expected.get("accept", []))
+
+
+def safety_metrics(results: list[dict]) -> dict:
+    """Métricas de seguridad del selector.
+
+    - false_tool_rate: se ejecutó una herramienta cuando lo correcto era ninguna (Lumi daría datos
+      que no son lo pedido). Objetivo ≤ 5 %.
+    - missing_detection: de las peticiones sin herramienta en el catálogo, cuántas quedan registradas
+      como capacidad que falta.
+    - status_accuracy: estado correcto en los casos que indican el estado esperado.
+    """
+    no_tool = [r for r in results if expects_no_tool(r["expected"])]
+    missing = [r for r in results if r["expected"].get("status") == "missing"]
+    with_status = [r for r in results if "status" in r["expected"]]
+    return {
+        "no_tool_cases": len(no_tool),
+        "false_tool_rate": round(sum(1 for r in no_tool if r["got"]["intents"]) / len(no_tool), 4) if no_tool else 0,
+        "missing_cases": len(missing),
+        "missing_detection": round(sum(1 for r in missing if r["got"].get("status") == "missing") / len(missing), 4) if missing else 0,
+        "status_accuracy": round(sum(1 for r in with_status if r["got"].get("status") == r["expected"]["status"]) / len(with_status), 4) if with_status else 0,
+    }
+
+
 def summarize(results: list[dict]) -> dict:
     total = len(results)
     ok = [r for r in results if r["score"]["correct"]]
@@ -203,11 +229,13 @@ def summarize(results: list[dict]) -> dict:
         "latency_p95_ms": round(percentile(latencies, 0.95), 1),
         "prompt_tokens_avg": round(statistics.mean(r["prompt_tokens"] for r in by_model), 1) if by_model else 0,
         "completion_tokens_avg": round(statistics.mean(r["completion_tokens"] for r in by_model), 1) if by_model else 0,
+        **safety_metrics(results),
         "by_category": {
             cat: {"cases": len(rs), "correct": sum(r["score"]["correct"] for r in rs)} for cat, rs in sorted(by_cat.items())
         },
         "failure_kinds": dict(Counter(
-            "json" if not r["score"]["json_valid"] else "intención" if not r["score"]["intent_ok"]
+            "json" if not r["score"]["json_valid"] else "estado" if not r["score"].get("status_ok", True)
+            else "intención" if not r["score"]["intent_ok"]
             else "argumentos" if not r["score"]["args_ok"] else "missing"
             for r in results if not r["score"]["correct"]
         )),
@@ -222,6 +250,7 @@ def markdown_report(meta: dict, summary: dict, concurrency: dict | None, cancel:
         f"- Casos: {summary['cases']} · **Acierto del sistema (reglas + modelo + normalización): {summary['accuracy']:.1%}** (meta ≥ 90 %)",
         f"- Resueltos por reglas sin modelo: {summary['resolved_by_rules']} · Llamadas al modelo: {summary['model_calls']} · Acierto del modelo solo (sin normalizar): {summary['model_only_accuracy']:.1%}",
         f"- Intención correcta: {summary['intent_accuracy']:.1%} · Dominio: {summary['domain_accuracy']:.1%} · JSON válido: {summary['json_valid_rate']:.1%} · Errores: {summary['errors']}",
+        f"- **Herramienta falsa: {summary['false_tool_rate']:.1%}** de {summary['no_tool_cases']} casos sin herramienta (objetivo ≤ 5 %) · Capacidades que faltan detectadas: {summary['missing_detection']:.1%} de {summary['missing_cases']} · Estado correcto: {summary['status_accuracy']:.1%}",
         f"- Latencia de las llamadas al modelo p50 / p95: {summary['latency_p50_ms']:.0f} / {summary['latency_p95_ms']:.0f} ms",
         f"- Tokens medios: entrada {summary['prompt_tokens_avg']:.0f} · salida {summary['completion_tokens_avg']:.0f}",
         f"- Carga inicial del modelo: {meta['warmup_load_ms']:.0f} ms",
@@ -274,6 +303,7 @@ async def main_async(args: argparse.Namespace) -> int:
         print(
             f"Sistema: {summary['correct']}/{summary['cases']} correctos ({summary['accuracy']:.1%}) · "
             f"modelo solo {summary['model_only_accuracy']:.1%} · reglas {summary['resolved_by_rules']} · "
+            f"herramienta falsa {summary['false_tool_rate']:.1%} · faltantes detectadas {summary['missing_detection']:.1%} · "
             f"p50 {summary['latency_p50_ms']:.0f} ms, p95 {summary['latency_p95_ms']:.0f} ms"
         )
 

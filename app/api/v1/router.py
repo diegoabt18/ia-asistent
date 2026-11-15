@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 
-from app.api.v1 import chat, conversations, generate, health, models, research, search, usage
+from app.api.v1 import chat, conversations, generate, health, models, research, search, select, usage
 from app.core.security import require_api_key
 
 api_router = APIRouter()
@@ -16,4 +16,5 @@ protected.include_router(search.router)
 protected.include_router(research.router)
 protected.include_router(usage.router)
 protected.include_router(generate.router)
+protected.include_router(select.router)
 api_router.include_router(protected)

@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     ollama_max_concurrent: int = 2
     # Espera máxima por una plaza libre antes de responder 503 (modelo ocupado).
     ollama_queue_timeout_seconds: float = 60.0
+    # Selector de herramientas (/select): contexto y tokens de salida acotados.
+    selector_num_ctx: int = 4096
+    selector_max_tokens: int = 200
 
     # Días que se conservan los registros de consumo (usage_events). 0 = no borrar.
     usage_retention_days: int = 90

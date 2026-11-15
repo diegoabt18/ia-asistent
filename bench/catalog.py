@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.prompts.selector_prompt import output_schema as app_output_schema
+
 DOMAINS = ("chat", "external", "lumia_op", "lumia_action", "analysis", "automation", "mixed")
 MAX_INTENTS = 2
 
@@ -104,46 +106,34 @@ INTENTS: tuple[Intent, ...] = (
 INTENTS_BY_NAME = {intent.name: intent for intent in INTENTS}
 
 
+# Módulos de la tienda: el modelo indica a cuál se refiere una petición (sobre todo cuando falta la
+# herramienta: así el Server registra la capacidad en su módulo).
+MODULES = (
+    "productos", "inventario", "pedidos", "pagos", "ventas", "clientes", "promociones", "banners",
+    "categorias", "resenas", "produccion", "usuarios", "configuracion", "recordatorios",
+    "notificaciones", "iniciativas",
+)
+
+
+def tool_specs() -> list[dict]:
+    """El catálogo en el formato que envía el Server a /select (app/schemas/select.py)."""
+    return [
+        {
+            "name": intent.name,
+            "description": intent.description,
+            "args": [
+                {"name": name, "kind": list(arg.kind) if isinstance(arg.kind, tuple) else arg.kind,
+                 "required": arg.required, "description": arg.description}
+                for name, arg in intent.args.items()
+            ],
+        }
+        for intent in INTENTS
+    ]
+
+
 def output_schema() -> dict:
-    """Esquema JSON que se pasa a Ollama en `format` (salida restringida).
-
-    Solo `intents`: el dominio y los datos que faltan los deduce el Server de forma determinista
-    (menos tokens de salida y nada que el modelo pueda equivocar).
-    """
-    return {
-        "type": "object",
-        "properties": {
-            "intents": {
-                "type": "array",
-                "maxItems": MAX_INTENTS,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "tool": {"type": "string", "enum": [i.name for i in INTENTS]},
-                        "args": {"type": "object"},
-                    },
-                    "required": ["tool", "args"],
-                },
-            },
-        },
-        "required": ["intents"],
-    }
-
-
-def describe_arg(name: str, arg: Arg) -> str:
-    kind = "|".join(arg.kind) if isinstance(arg.kind, tuple) else arg.kind
-    req = "" if arg.required else "?"
-    note = f" ({arg.description})" if arg.description else ""
-    return f"{name}{req}:{kind}{note}"
-
-
-def catalog_lines() -> list[str]:
-    """Una línea por intención: nombre, descripción y argumentos. Es lo que ve el modelo."""
-    lines = []
-    for intent in INTENTS:
-        args = ", ".join(describe_arg(n, a) for n, a in intent.args.items())
-        lines.append(f"- {intent.name}: {intent.description}" + (f". args: {args}" if args else ""))
-    return lines
+    """Esquema de salida de producción (app/prompts/selector_prompt.py) para este catálogo."""
+    return app_output_schema([i.name for i in INTENTS], MODULES)
 
 
 def validate_args(tool: str, args: object) -> list[str]:

@@ -68,17 +68,18 @@ SINGLE_ORDER = re.compile(r"\b(pedido|orden)\b")
 # Una escritura o un recordatorio solo se aceptan si el mensaje contiene su verbo: el modelo no
 # puede convertir "borra todos los productos" en "desactivar producto".
 WRITE_VERBS = {
-    "products.set_active": re.compile(r"\b(des)?activ\w*|\bapag\w*|\bocult\w*|\bretir\w*"),
-    "promotions.set_active": re.compile(r"\bpaus\w*|\breanud\w*|\b(des)?activ\w*|\bdeten\w*"),
+    "products.set_active": re.compile(r"\b(des|re)?activ\w*|\bapag\w*|\bocult\w*|\bretir\w*"),
+    "promotions.set_active": re.compile(r"\bpaus\w*|\breanud\w*|\b(des|re)?activ\w*|\bdeten\w*"),
     "orders.mark_shipped": re.compile(r"\benvi\w*|\bdespach\w*|\bsalio\b"),
     "reminders.create": re.compile(
-        r"\brecuerd\w*|\brecordar\w*|\bavis\w*|\balarma\b|\brecordatorio\b|\bagenda\w*|\bprogram\w*|\btarea\b|\bcada\b|\btodos los dias\b|\bdiari\w*|\bsemanal\w*|\bmensual\w*"
+        r"\brecuerd\w*|\brecordar\w*|\bavis(?:ame|eme|arme|anos|ale|ales)\b|\balarma\b|\brecordatorio\b|\bagenda\w*|\bprogram\w*|\btarea\b|\bcada\b|\btodos los dias\b|\bdiari\w*|\bsemanal\w*|\bmensual\w*"
     ),
 }
 DEACTIVATE = re.compile(r"\bdesactiv\w*|\bpaus\w*|\bapag\w*|\bocult\w*|\bdeten\w*|\bretir\w*")
 
 # Verbos que piden un recordatorio sin ambigüedad ("recuérdame", "avísame", "ponme una alarma").
-REMINDER_VERB = re.compile(r"\brecuerd\w*|\brecordar\w*|\bavis\w*|\balarma\b|\brecordatorio\b")
+# "avísame" sí; "avisos" (las notificaciones) no.
+REMINDER_VERB = re.compile(r"\brecuerd\w*|\brecordar\w*|\bavis(?:ame|eme|arme|anos|ale|ales)\b|\balarma\b|\brecordatorio\b")
 LOW_STOCK = re.compile(r"\bsin stock\b|\bagot\w*|\bpoco stock\b|\bbajo stock\b|\bse (?:esta|estan) acabando\b|\bpor acabarse\b|\breponer\b")
 PAYMENTS = re.compile(r"\bpagos?\b")
 MARKET = re.compile(r"\b(mercado|competencia|tendencias?)\b")
@@ -110,7 +111,7 @@ LEADING_FILLER = re.compile(r"^(?:(?:que tengo que|que debo|que hay que|que|para
 GENERIC_WORDS = frozenset(
     "producto productos promocion promociones promo pedido pedidos orden ordenes stock inventario articulo "
     "articulos item cosa algo eso esto este ese esta esa mi mis su sus el la los las lo un una unos unas de "
-    "del al a y que cuanto cuanta cuantos cuantas queda quedan hay tiene tengo".split()
+    "del al a y o que cuanto cuanta cuantos cuantas queda quedan hay tiene tengo para por con en sin me te se le les nos".split()
 )
 
 ENTITY_TOOLS = {
@@ -296,6 +297,7 @@ def normalize_selection(message: str, context: dict | None, selection: Selection
     intents = correct_tools(text, message, entity, intents)
 
     kept: list[dict] = []
+    dropped_write = False
     for intent in intents:
         tool = intent["tool"]
         if any(k["tool"] == tool for k in kept):
@@ -303,6 +305,7 @@ def normalize_selection(message: str, context: dict | None, selection: Selection
         spec = INTENTS_BY_NAME[tool]
         verb = WRITE_VERBS.get(tool)
         if verb and not verb.search(text):
+            dropped_write = True
             continue
         # Solo argumentos del catálogo y con valor (las cadenas vacías cuentan como ausentes).
         args = {
@@ -373,7 +376,28 @@ def normalize_selection(message: str, context: dict | None, selection: Selection
             if count:
                 args["limit"] = max(1, min(int(count.group(1)), 50))
         kept.append({"tool": tool, "args": args})
-    return finalize(Selection(None, kept, [], None, list(selection.errors)), text)
+    status = final_status(text, selection, kept, dropped_write)
+    need = (selection.need or message.strip())[:120] if status == "missing" else ""
+    module = selection.module if status != "chat" else "none"
+    return finalize(Selection(None, kept, [], None, list(selection.errors), status, need, module), text)
+
+
+def final_status(text: str, model: Selection, kept: list[dict], dropped_write: bool) -> str:
+    """Estado definitivo (lo decide el Server, no el modelo):
+    tool: hay herramienta válida · chat: conversación · missing: la tienda no tiene esa capacidad ·
+    ambiguous: hay que preguntar. Los datos que faltan (`missing_information`) salen de `finalize`."""
+    if kept:
+        return "tool"
+    if DEFINITION.search(text):
+        return "chat"
+    # "borra todos los productos": una escritura sin su verbo no se ejecuta; es una capacidad que no existe.
+    if dropped_write and STORE_WORDS.search(text):
+        return "missing"
+    if model.status == "missing":
+        return "missing" if model.module != "none" or STORE_WORDS.search(text) else "chat"
+    if model.status == "ambiguous":
+        return "ambiguous"
+    return "chat"
 
 
 def finalize(selection: Selection, text: str) -> Selection:
@@ -390,7 +414,8 @@ def finalize(selection: Selection, text: str) -> Selection:
         domain = domains.pop()
     else:
         domain = "mixed"
-    return Selection(domain, selection.intents, missing, None, selection.errors)
+    status = "tool" if selection.intents else selection.status
+    return Selection(domain, selection.intents, missing, None, selection.errors, status, selection.need, selection.module)
 
 
 def domain_of(tool: str, text: str) -> str:

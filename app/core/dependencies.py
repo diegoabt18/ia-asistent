@@ -5,6 +5,7 @@ from app.services.assistant_service import AssistantService
 from app.services.ollama_service import OllamaService
 from app.services.research_service import ResearchService
 from app.services.search_service import SearchService
+from app.services.selector_service import SelectorService
 
 
 def _ollama(state) -> OllamaService:
@@ -43,3 +44,8 @@ def get_assistant_service(request: Request) -> AssistantService:
         ConversationRepository(state.session_factory),
         get_research_service(request),
     )
+
+
+def get_selector_service(request: Request) -> SelectorService:
+    state = request.app.state
+    return SelectorService(state.settings, _ollama(state), ConversationRepository(state.session_factory))

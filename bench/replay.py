@@ -16,7 +16,7 @@ from collections import Counter
 from pathlib import Path
 
 from bench.rules import normalize_selection, route_rules
-from bench.run import CASES_FILE, load_cases
+from bench.run import CASES_FILE, load_cases, safety_metrics
 from bench.selector import Selection, parse_selection, score_case
 
 
@@ -42,6 +42,7 @@ def replay(report: dict, cases_path: Path = CASES_FILE) -> list[dict]:
         rows.append({
             "id": case["id"], "category": case["category"], "message": message, "source": source,
             "correct": score.correct, "notes": score.notes, "before": result["score"]["correct"],
+            "expected": case["expected"], "got": {"status": selection.status, "intents": selection.intents},
         })
     return rows
 
@@ -56,6 +57,8 @@ def main() -> None:
     now = sum(r["correct"] for r in rows)
     before = sum(r["before"] for r in rows)
     print(f"Antes: {before}/{total} ({before / total:.1%}) · Con las reglas actuales: {now}/{total} ({now / total:.1%})")
+    safety = safety_metrics([r for r in rows if "got" in r])
+    print(f"Herramienta falsa: {safety['false_tool_rate']:.1%} · faltantes detectadas: {safety['missing_detection']:.1%} · estado: {safety['status_accuracy']:.1%}")
     by_category: Counter[str] = Counter(r["category"] for r in rows)
     ok_category: Counter[str] = Counter(r["category"] for r in rows if r["correct"])
     for category in sorted(by_category):

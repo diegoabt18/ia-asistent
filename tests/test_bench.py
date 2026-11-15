@@ -11,14 +11,26 @@ import httpx
 from bench.catalog import DOMAINS, INTENTS, INTENTS_BY_NAME, output_schema, validate_args
 from bench.rules import normalize_selection, route_rules
 from bench.run import load_cases, parse_args, run_cases, summarize
-from bench.selector import Selection, build_messages, parse_selection, score_case, system_prompt, value_matches
+from bench.selector import Selection, build_messages, normalize, parse_selection, score_case, system_prompt, value_matches
 
 CASES = load_cases()
 
 
 def answer(case: dict) -> str:
     """Respuesta perfecta del modelo para un caso (formato v2: solo intents)."""
-    return json.dumps({"intents": case["expected"]["intents"]})
+    exp = case["expected"]
+    status = exp.get("status") or ("tool" if exp["intents"] else "chat")
+    return json.dumps({
+        "status": status,
+        "intents": exp["intents"],
+        "need": "algo que falta" if status == "missing" else "",
+        "module": "productos" if status == "missing" else "none",
+    })
+
+
+def model_json(intents: list[dict], status: str | None = None, module: str = "none") -> str:
+    """Salida del modelo en el formato de producción (v4)."""
+    return json.dumps({"status": status or ("tool" if intents else "chat"), "intents": intents, "need": "", "module": module})
 
 
 def system(case: dict, raw: str) -> Selection:
@@ -68,9 +80,10 @@ def test_the_prompt_lists_every_intent_and_stays_small_and_static() -> None:
     assert len(prompt) < 6000
 
 
-def test_output_schema_only_asks_for_intents() -> None:
+def test_output_schema_is_the_production_one() -> None:
     schema = output_schema()
-    assert schema["required"] == ["intents"] and set(schema["properties"]) == {"intents"}
+    assert schema["required"] == ["status", "intents", "need", "module"]
+    assert schema["properties"]["status"]["enum"] == ["tool", "chat", "missing", "ambiguous"]
     assert set(schema["properties"]["intents"]["items"]["properties"]["tool"]["enum"]) == set(INTENTS_BY_NAME)
     assert schema["properties"]["intents"]["maxItems"] == 2
 
@@ -91,9 +104,9 @@ def test_the_rules_never_spoil_a_perfect_model_answer() -> None:
 
 def test_wrong_intent_or_argument_is_not_correct() -> None:
     expected = {"domain": "lumia_op", "intents": [{"tool": "orders.count", "args": {"status": "paid"}}]}
-    wrong_tool = parse_selection(json.dumps({"intents": [{"tool": "orders.recent", "args": {}}]}))
-    wrong_arg = parse_selection(json.dumps({"intents": [{"tool": "orders.count", "args": {"status": "shipped"}}]}))
-    bad_enum = parse_selection(json.dumps({"intents": [{"tool": "orders.count", "args": {"status": "paid", "period": "ayer"}}]}))
+    wrong_tool = parse_selection(model_json([{"tool": "orders.recent", "args": {}}]))
+    wrong_arg = parse_selection(model_json([{"tool": "orders.count", "args": {"status": "shipped"}}]))
+    bad_enum = parse_selection(model_json([{"tool": "orders.count", "args": {"status": "paid", "period": "ayer"}}]))
     assert not score_case(expected, wrong_tool).correct
     assert not score_case(expected, wrong_arg).correct
     assert not score_case(expected, bad_enum).correct  # el Server rechazaría "ayer": no es un periodo válido
@@ -101,7 +114,7 @@ def test_wrong_intent_or_argument_is_not_correct() -> None:
 
 def test_unexpected_arguments_are_errors_for_the_raw_model() -> None:
     expected = {"domain": "lumia_op", "intents": [{"tool": "inventory.low", "args": {}}]}
-    extra_arg = parse_selection(json.dumps({"intents": [{"tool": "inventory.low", "args": {"sql": "x"}}]}))
+    extra_arg = parse_selection(model_json([{"tool": "inventory.low", "args": {"sql": "x"}}]))
     assert not score_case(expected, extra_arg).correct
 
 
@@ -245,7 +258,7 @@ V2_MODEL_ANSWERS = {
 def test_the_rules_fix_the_v2_failures() -> None:
     for case_id, intents in V2_MODEL_ANSWERS.items():
         case = by_id(case_id)
-        score = score_case(case["expected"], system(case, json.dumps({"intents": intents})))
+        score = score_case(case["expected"], system(case, model_json(intents)))
         assert score.correct, (case_id, score.notes)
 
 
@@ -292,5 +305,55 @@ def test_control_cases_are_valid_and_the_rules_never_spoil_a_perfect_answer() ->
 
 def test_accepted_alternatives_count_as_correct_but_unlisted_ones_do_not() -> None:
     expected = {"domain": "lumia_op", "intents": [{"tool": "dashboard.today", "args": {}}], "accept": [["initiatives.list"]]}
-    assert score_case(expected, parse_selection(json.dumps({"intents": [{"tool": "initiatives.list", "args": {}}]}))).correct
-    assert not score_case(expected, parse_selection(json.dumps({"intents": [{"tool": "orders.recent", "args": {}}]}))).correct
+    assert score_case(expected, parse_selection(model_json([{"tool": "initiatives.list", "args": {}}]))).correct
+    assert not score_case(expected, parse_selection(model_json([{"tool": "orders.recent", "args": {}}]))).correct
+
+
+# ------------------------------------------------------------------ v4: estados y banco de validación
+
+VALIDATION = load_cases(Path(__file__).resolve().parents[1] / "bench" / "validation.json")
+
+
+def test_validation_cases_are_valid_and_independent_of_the_other_banks() -> None:
+    others = {normalize(c["message"]) for c in CASES + CONTROL}
+    assert len({c["id"] for c in VALIDATION}) == len(VALIDATION) >= 40
+    for case in VALIDATION:
+        assert normalize(case["message"]) not in others, case["id"]
+        for intent in case["expected"]["intents"]:
+            errors = [e for e in validate_args(intent["tool"], intent["args"]) if not e.startswith("falta ")]
+            assert not errors, (case["id"], errors)
+        score = score_case(case["expected"], system(case, answer(case)))
+        assert score.correct, (case["id"], score.notes)
+
+
+def sel(message: str, intents: list[dict], status: str, module: str = "none", need: str = "") -> Selection:
+    raw = parse_selection(json.dumps({"status": status, "intents": intents, "need": need, "module": module}))
+    return normalize_selection(message, None, raw)
+
+
+def test_final_status_is_decided_by_the_server() -> None:
+    # Escritura sin su verbo: no se ejecuta y queda como capacidad que falta.
+    got = sel("borra todos los productos", [{"tool": "products.set_active", "args": {"name": "todos"}}], "tool", "productos")
+    assert (got.status, got.intents) == ("missing", []) and got.need
+    # El modelo dice que falta una capacidad de un módulo: se respeta y se conserva lo que pide.
+    got = sel("exporta las ventas a excel", [], "missing", "ventas", "exportar ventas")
+    assert (got.status, got.need, got.module) == ("missing", "exportar ventas", "ventas")
+    # "missing" sin módulo ni palabras de la tienda es conversación.
+    assert sel("cuéntame un chiste", [], "missing").status == "chat"
+    # Pregunta de definición: conversación aunque el modelo elija una herramienta.
+    assert sel("¿qué es el ticket promedio?", [{"tool": "sales.summary", "args": {}}], "tool").status == "chat"
+    assert sel("lo de siempre", [], "ambiguous").status == "ambiguous"
+
+
+def test_safety_metrics_count_false_tools_and_detected_gaps() -> None:
+    from bench.run import safety_metrics
+
+    rows = [
+        {"expected": {"intents": [], "status": "missing"}, "got": {"intents": [{"tool": "products.search"}], "status": "tool"}},
+        {"expected": {"intents": [], "status": "missing"}, "got": {"intents": [], "status": "missing"}},
+        {"expected": {"intents": [], "status": "chat"}, "got": {"intents": [], "status": "chat"}},
+        {"expected": {"intents": [{"tool": "x"}]}, "got": {"intents": [{"tool": "x"}], "status": "tool"}},
+    ]
+    m = safety_metrics(rows)
+    assert m["no_tool_cases"] == 3 and m["false_tool_rate"] == round(1 / 3, 4)
+    assert m["missing_detection"] == 0.5 and m["status_accuracy"] == round(2 / 3, 4)
