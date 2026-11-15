@@ -117,12 +117,23 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 :#-]", " ", text.lower())).strip()
 
 
+def same_word(a: str, b: str) -> bool:
+    """Misma palabra o la misma raíz ("revisa"/"revisar", "vela"/"velas", "despachar"/"despacharlos").
+    Las palabras cortas y los números tienen que coincidir exactamente."""
+    if a == b:
+        return True
+    if len(a) < 4 or len(b) < 4:
+        return False
+    stem = min(5, len(a), len(b))
+    return a[:stem] == b[:stem]
+
+
 def value_matches(expected: object, actual: object) -> bool:
-    """Texto: todas las palabras esperadas aparecen en lo devuelto. Resto: igualdad exacta."""
+    """Texto: todas las palabras esperadas aparecen (o su raíz) en lo devuelto. Resto: igualdad exacta."""
     if isinstance(expected, str) and isinstance(actual, str):
         want = set(normalize(expected).split())
         got = set(normalize(actual).split())
-        return bool(want) and want <= got
+        return bool(want) and all(any(same_word(w, g) for g in got) for w in want)
     if isinstance(expected, bool) or isinstance(actual, bool):
         return expected is actual
     return expected == actual
