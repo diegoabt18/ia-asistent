@@ -29,6 +29,7 @@ async def chat(
         context=payload.context,
         think=payload.think,
         capabilities=payload.capabilities,
+        references=payload.references,
     )
     return ChatResponse(
         conversation_id=result.conversation_id,
@@ -36,6 +37,7 @@ async def chat(
         response=result.text,
         sources=result.sources,
         verification=to_schema(result.verification) if result.verification else None,
+        references=result.references or [],
     )
 
 
@@ -47,7 +49,7 @@ async def record_exchange(
 ) -> ExchangeResponse:
     # No usa el modelo: solo guarda un turno que el backend ya resolvió.
     conversation_id = await assistant.record_exchange(
-        payload.message, payload.answer, payload.conversation_id, user_ref
+        payload.message, payload.answer, payload.conversation_id, user_ref, payload.references
     )
     return ExchangeResponse(conversation_id=conversation_id)
 
@@ -76,6 +78,7 @@ async def chat_stream(
         context=payload.context,
         think=payload.think,
         capabilities=payload.capabilities,
+        references=payload.references,
     )
     return StreamingResponse(
         _to_sse(events),

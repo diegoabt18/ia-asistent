@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta
 
 from sqlalchemy import delete, func, select
@@ -46,6 +47,7 @@ class ConversationRepository:
         user_text: str,
         assistant_text: str,
         title: str,
+        references: list[dict] | None = None,
     ) -> None:
         """Guarda un turno completo (usuario + asistente) en una sola transacción.
 
@@ -71,7 +73,13 @@ class ConversationRepository:
             s.add_all(
                 [
                     Message(conversation_id=conversation_id, role="user", content=user_text, created_at=now),
-                    Message(conversation_id=conversation_id, role="assistant", content=assistant_text, created_at=now),
+                    Message(
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=assistant_text,
+                        references_json=json.dumps(references, ensure_ascii=False) if references else None,
+                        created_at=now,
+                    ),
                 ]
             )
             s.commit()

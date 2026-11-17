@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 import httpx
@@ -49,6 +49,19 @@ class ResearchAnswer:
     usage: ModelUsage | None = None
 
 
+SOURCE_SNIPPET_MAX_CHARS = 280
+
+
+def source_snippet(doc: PageDocument) -> str | None:
+    """Fragmento de la fuente: el del buscador o, si no lo dio, el comienzo del texto leído."""
+    text = doc.snippet or " ".join(doc.text.split())
+    if not text:
+        return None
+    if len(text) <= SOURCE_SNIPPET_MAX_CHARS:
+        return text
+    return text[: SOURCE_SNIPPET_MAX_CHARS - 1].rstrip() + "…"
+
+
 def to_sources(documents: list[PageDocument], cited: Iterable[int]) -> list[ResearchSource]:
     cited_set = set(cited)
     return [
@@ -60,8 +73,28 @@ def to_sources(documents: list[PageDocument], cited: Iterable[int]) -> list[Rese
             category=classify(domain_of(doc.url)),
             published_date=doc.published_date,
             cited=index in cited_set,
+            snippet=source_snippet(doc),
         )
         for index, doc in enumerate(documents, 1)
+    ]
+
+
+def source_references(sources: list[ResearchSource]) -> list[dict]:
+    """Fuentes de un turno web tal como se guardan con el mensaje (referencias `web_source`).
+
+    Solo metadatos que devolvió el buscador o la página leída: nada se deduce del número de cita.
+    """
+    return [
+        {
+            "type": "web_source",
+            "index": s.index,
+            "title": s.title,
+            "url": s.url,
+            "domain": s.domain,
+            "snippet": s.snippet,
+            "cited": s.cited,
+        }
+        for s in sources
     ]
 
 
@@ -140,7 +173,9 @@ class ResearchService:
 
         async def load(result: SearchResult) -> PageDocument | None:
             async with semaphore:
-                return await fetch_document(self._client, result.url, self._settings)
+                doc = await fetch_document(self._client, result.url, self._settings)
+            # El fragmento del buscador acompaña a la fuente (se muestra en «Fuentes consultadas»).
+            return replace(doc, snippet=" ".join(result.snippet.split())) if doc else None
 
         # Se descarga por tandas de `max_sources` hasta reunir esa cantidad de páginas con texto.
         documents: list[PageDocument] = []
@@ -167,6 +202,7 @@ class ResearchService:
                     title=result.title,
                     published_date=None,
                     text=snippet,
+                    snippet=snippet,
                 )
             )
             loaded_urls.add(result.url)

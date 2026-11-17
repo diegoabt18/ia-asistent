@@ -35,6 +35,8 @@ class PageDocument:
     title: str
     published_date: str | None
     text: str
+    # Fragmento que devolvió el buscador para esta URL (vacío si no lo dio).
+    snippet: str = ""
 
 
 async def fetch_html(

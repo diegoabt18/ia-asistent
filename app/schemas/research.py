@@ -16,6 +16,8 @@ class ResearchSource(BaseModel):
     published_date: str | None = None
     # True solo si el modelo citó esta fuente con una referencia válida.
     cited: bool = False
+    # Fragmento del buscador (o comienzo del texto leído) para «Fuentes consultadas».
+    snippet: str | None = None
 
 
 class ResearchResponse(BaseModel):

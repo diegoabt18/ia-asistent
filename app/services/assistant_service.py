@@ -16,7 +16,7 @@ from app.prompts.system_prompts import SYSTEM_PROMPT, chat_system_prompt
 from app.repositories.conversation_repository import ConversationRepository
 from app.schemas.research import ResearchSource
 from app.services.ollama_service import ModelUsage, OllamaService
-from app.services.research_service import ResearchService, to_sources
+from app.services.research_service import ResearchService, source_references, to_sources
 from app.services.verification_service import VerificationResult, to_schema
 from app.services.web_extraction_service import PageDocument
 
@@ -83,6 +83,12 @@ class ChatResult:
     text: str
     sources: list[ResearchSource]
     verification: VerificationResult | None = None
+    references: list[dict] | None = None
+
+
+def stored_references(use_web: bool, sources: list[ResearchSource], given: list[dict] | None) -> list[dict]:
+    """Lo que se guarda con la respuesta: en búsqueda web, sus fuentes; si no, lo que envió el servidor."""
+    return source_references(sources) if use_web else list(given or [])
 
 
 class AssistantService:
@@ -118,13 +124,14 @@ class AssistantService:
         answer: str,
         conversation_id: str | None,
         user_ref: str,
+        references: list[dict] | None = None,
     ) -> str:
         """Guarda un turno sin llamar al modelo. Devuelve el identificador de la conversación."""
         if conversation_id is not None:
             await self.validate_conversation(conversation_id, user_ref)
         conv_id = conversation_id or str(uuid.uuid4())
         await asyncio.to_thread(
-            self._repo.add_exchange, conv_id, user_ref, message, answer, title_from(message)
+            self._repo.add_exchange, conv_id, user_ref, message, answer, title_from(message), references
         )
         return conv_id
 
@@ -174,6 +181,7 @@ class AssistantService:
         context: str | None = None,
         think: bool = False,
         capabilities: str | None = None,
+        references: list[dict] | None = None,
     ) -> ChatResult:
         if conversation_id is not None:
             await self.validate_conversation(conversation_id, user_ref)
@@ -194,13 +202,22 @@ class AssistantService:
         else:
             verification, text, sources = None, raw, []
 
+        stored = stored_references(use_web, sources, references)
         await asyncio.to_thread(
-            self._repo.add_exchange, conv_id, user_ref, message, text, title_from(message)
+            self._repo.add_exchange,
+            conv_id,
+            user_ref,
+            message,
+            text,
+            title_from(message),
+            stored,
         )
         await asyncio.to_thread(
             self._repo.record_usage, user_ref, "chat", self.model, completion.usage
         )
-        return ChatResult(conversation_id=conv_id, text=text, sources=sources, verification=verification)
+        return ChatResult(
+            conversation_id=conv_id, text=text, sources=sources, verification=verification, references=stored
+        )
 
     async def generate(
         self,
@@ -235,6 +252,7 @@ class AssistantService:
         context: str | None = None,
         think: bool = False,
         capabilities: str | None = None,
+        references: list[dict] | None = None,
     ) -> AsyncIterator[tuple[str, dict]]:
         """Emite eventos (evento, datos). Si el cliente se desconecta, no se guarda el turno.
 
@@ -279,8 +297,17 @@ class AssistantService:
         else:
             verification, text, sources = None, raw, []
 
+        # Las fuentes (o las referencias del servidor) quedan guardadas con la respuesta: el historial
+        # conserva sus citas y enlaces sin repetir la búsqueda.
+        stored = stored_references(use_web, sources, references)
         await asyncio.to_thread(
-            self._repo.add_exchange, conv_id, user_ref, message, text, title_from(message)
+            self._repo.add_exchange,
+            conv_id,
+            user_ref,
+            message,
+            text,
+            title_from(message),
+            stored,
         )
         usage = usages[-1] if usages else ModelUsage(prompt_tokens=0, completion_tokens=0)
         await asyncio.to_thread(
@@ -289,6 +316,7 @@ class AssistantService:
         done: dict = {
             "conversation_id": conv_id,
             "sources": [s.model_dump() for s in sources],
+            "references": stored,
         }
         if verification is not None:
             done["verification"] = to_schema(verification).model_dump()

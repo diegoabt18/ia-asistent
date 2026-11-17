@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -9,6 +10,8 @@ class MessageOut(BaseModel):
     id: int
     role: str
     content: str
+    # Referencias guardadas con el mensaje (fuentes web, registros del panel). Vacío en mensajes antiguos.
+    references: list[dict[str, Any]] = []
     created_at: datetime
 
 

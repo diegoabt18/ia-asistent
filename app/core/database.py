@@ -33,13 +33,19 @@ def init_schema(engine: Engine) -> None:
     """Crea las tablas que falten y añade las columnas nuevas a bases ya existentes.
 
     `create_all` no altera tablas existentes, así que la columna `user_ref` de
-    `conversations` se añade aquí si la base es anterior a la identidad por usuario.
+    `conversations` se añade aquí si la base es anterior a la identidad por usuario, y
+    `references_json` de `messages` si es anterior a las referencias de los mensajes.
     """
     # Importa los modelos para que estén registrados en Base.metadata.
     import app.models  # noqa: F401
 
     Base.metadata.create_all(engine)
     inspector = inspect(engine)
+    if "messages" in inspector.get_table_names():
+        message_columns = {c["name"] for c in inspector.get_columns("messages")}
+        if "references_json" not in message_columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE messages ADD COLUMN references_json TEXT"))
     if "conversations" not in inspector.get_table_names():
         return
     columns = {c["name"] for c in inspector.get_columns("conversations")}
