@@ -9,3 +9,6 @@ pydantic-settings==2.6.1
 sqlalchemy==2.0.36
 trafilatura==2.0.0
 lxml_html_clean==0.4.6
+# Módulo de música. "default" incluye yt-dlp-ejs (resuelve los retos JS de YouTube) y "deno" instala
+# el runtime JavaScript que yt-dlp necesita para YouTube. Se importa solo al usar la música.
+yt-dlp[default,deno]==2026.10.21

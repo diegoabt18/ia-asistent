@@ -70,6 +70,16 @@ Swagger: http://127.0.0.1:8000/docs
 | DELETE | `/api/v1/conversations/{id}` | Sí + usuario | Elimina la conversación y sus mensajes |
 | GET | `/api/v1/usage?days=30` | Sí + usuario | Consumo de inferencia del usuario (peticiones y tokens) |
 | GET | `/api/v1/search?q=...` | Sí | Búsqueda directa en SearXNG (sin leer las páginas) |
+| GET | `/api/v1/music/tools` | Sí | Catálogo de herramientas de música (forma de `/select` + `module` y `permission`) |
+| POST | `/api/v1/music/commands` | Sí + usuario | Ejecuta un comando de música `{tool, args}` y responde con texto determinista y el estado |
+| GET | `/api/v1/music/search?q=...` | Sí + usuario | Busca canciones (yt-dlp) sin reproducirlas |
+| GET | `/api/v1/music/state` | Sí + usuario | Estado del reproductor, cola y ESP32 |
+| POST / DELETE | `/api/v1/music/queue` | Sí + usuario | Añade una canción (`query` o `video_id`) / vacía la cola |
+| GET | `/api/v1/music/device/ping` | Token ESP32 | Comprobación de conexión del ESP32 |
+| POST | `/api/v1/music/device/heartbeat` | Token ESP32 | Latido con el estado del ESP32; devuelve el del reproductor |
+| GET | `/api/v1/music/device/state` | Token ESP32 | Estado del reproductor |
+| GET | `/api/v1/music/device/stream` | Token ESP32 | Audio de la pista actual (MP3 o PCM); 204 si no hay nada |
+| POST | `/api/v1/music/device/control` | Token ESP32 | Botones físicos: `pause`, `resume`, `toggle`, `next`, `previous`, `stop` |
 
 Autenticación: cabecera `X-API-Key: <tu clave>`. Si `API_KEY` está vacía, los endpoints protegidos responden 503.
 
@@ -93,6 +103,39 @@ curl -X POST -H "X-API-Key: TU_CLAVE" -H "Content-Type: application/json" \
   -d '{"message": "¿Quién es el presidente de Colombia?", "use_web": true}' \
   http://127.0.0.1:8000/api/v1/chat
 ```
+
+## Módulo de música (ESP32 + altavoz Bluetooth)
+
+Busca canciones con yt-dlp, obtiene la URL de audio, la transcodifica con FFmpeg y la envía por HTTP a un ESP32 clásico, que la decodifica y la reproduce en un altavoz por Bluetooth A2DP (el firmware es un componente aparte). Está desactivado por defecto (`MUSIC_ENABLED=false`).
+
+Código en `app/services/music/`:
+
+| Archivo | Responsabilidad |
+|---|---|
+| `types.py` | `Track`, `AudioSource` y validación de IDs de YouTube |
+| `extract.py` | Único uso de yt-dlp: búsqueda (`ytsearchN:`) y URL de audio. Solo extractor de YouTube e IDs validados (sin SSRF) |
+| `search.py` | Reglas de búsqueda: límite de resultados y duración máxima |
+| `queue.py` | Cola con posición actual, anterior/siguiente, tamaño acotado |
+| `player.py` | Estado (`idle`/`playing`/`paused`, `generation`) y latidos del ESP32 |
+| `stream.py` | FFmpeg en subproceso → MP3 o PCM por trozos; se mata al desconectar |
+| `controller.py` | Coordina todo; una instancia por proceso (`app.state.music`) |
+| `commands.py` | Herramientas para el asistente: validación, permiso y texto de respuesta |
+
+**Asistente:** el servidor de Lumia obtiene el catálogo en `GET /music/tools`, lo añade a `/select` si el usuario tiene permiso (`music.read` para `search`, `current`, `device_status`; `music.control` para `play`, `pause`, `resume`, `next`, `previous`) y ejecuta lo que proponga el modelo con `POST /music/commands`. La respuesta es texto fijo, sin modelo. `MUSIC_CONTROL_USER_REFS` limita además quién puede controlar.
+
+**ESP32:** se autentica con `Authorization: Bearer <MUSIC_DEVICE_TOKEN>` y `X-Device-Id`. Envía un latido cada pocos segundos; si `generation` cambia, reabre `/device/stream`. En pausa el servidor deja de enviar audio sin cerrar la conexión; al cambiar de pista el stream termina. Solo hay un stream activo: abrir otro cierra el anterior.
+
+**Red:** el contenedor no publica puertos. Para que el ESP32 llegue, define `MUSIC_DEVICE_BIND_ADDRESS` (IP de la LAN del host) en `.env` y arranca con:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.music.yml up -d --build
+```
+
+El puerto queda publicado solo en esa IP. Sirve toda la API, pero el resto de rutas siguen exigiendo `X-API-Key`.
+
+**Recursos:** un solo FFmpeg a la vez, un hilo, trozos de `MUSIC_CHUNK_BYTES`. FFmpeg transcodifica al ritmo al que lee el ESP32 (contrapresión de TCP). MP3 a 128 kbps es lo recomendado: en el ESP32 clásico el Wi-Fi y el Bluetooth comparten radio y PCM (~1,4 Mbps) suele cortarse.
+
+**Aviso legal:** descargar o retransmitir audio de YouTube con yt-dlp va contra los Términos de Servicio de YouTube y puede infringir derechos de autor. Úsalo solo para uso personal en tu red local, sin redistribuir. YouTube cambia a menudo y puede romper yt-dlp: actualiza su versión en `requirements.txt` cuando ocurra.
 
 ## Cómo funciona la investigación (Fase 3)
 

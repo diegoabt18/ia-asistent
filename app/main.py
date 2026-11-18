@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.core.database import create_db, init_schema
 from app.core.exceptions import ConversationNotFoundError, ModelBusyError, UpstreamServiceError
 from app.repositories.conversation_repository import ConversationRepository
+from app.services.music.controller import MusicController
 from app.services.redis_service import create_redis_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -36,9 +37,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Límite compartido por todas las peticiones: los servicios se crean por petición.
     app.state.verify_slots = asyncio.Semaphore(max(1, settings.verification_max_concurrent))
     app.state.model_slots = asyncio.Semaphore(max(1, settings.ollama_max_concurrent))
+    # Módulo de música: no abre procesos ni conexiones hasta que se usa.
+    app.state.music = MusicController(settings)
     try:
         yield
     finally:
+        await app.state.music.close()
         await app.state.http.aclose()
         await app.state.redis.aclose()
         engine.dispose()

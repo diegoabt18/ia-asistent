@@ -74,6 +74,12 @@ TOOL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     ("Si pregunta cuánto queda o cuántas unidades hay de un producto, es products.stock.", ("products.stock",)),
     ("Si pregunta por qué cambian sus ventas o pide compararlas, usa sales.summary igualmente.", ("sales.summary",)),
+    # Módulo de música: solo aparece si el Server envía sus herramientas (ver app/services/music/commands.py).
+    (
+        "Si pide poner, escuchar o reproducir música, una canción o un artista, es music.play; "
+        "si solo pide buscarla sin reproducir, es music.search.",
+        ("music.play", "music.search"),
+    ),
 )
 
 def _out(module: str, status: str, intents: list[dict[str, Any]] | None = None, need: str = "") -> dict[str, Any]:
@@ -97,6 +103,9 @@ EXAMPLES: tuple[tuple[str, dict[str, Any]], ...] = (
     ("¿qué clientes compraron más este año?", _out("clientes", "no_tool", need="clientes que más compran")),
     ("exporta los pedidos de octubre a Excel", _out("pedidos", "no_tool", need="exportar pedidos a Excel")),
     ("¿qué significa margen bruto?", _out(NO_MODULE, "chat")),
+    ("ponme algo de Soda Stereo", _out("musica", "tool", [{"tool": "music.play", "args": {"query": "Soda Stereo"}}])),
+    ("para la música un momento", _out("musica", "tool", [{"tool": "music.pause", "args": {}}])),
+    ("¿qué canción suena?", _out("musica", "tool", [{"tool": "music.current", "args": {}}])),
 )
 
 

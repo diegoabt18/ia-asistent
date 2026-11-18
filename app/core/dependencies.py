@@ -1,7 +1,10 @@
-from fastapi import Request
+from fastapi import Depends, Request
 
+from app.core.config import Settings, get_settings
 from app.repositories.conversation_repository import ConversationRepository
 from app.services.assistant_service import AssistantService
+from app.services.music.commands import MusicCommands
+from app.services.music.controller import MusicController
 from app.services.ollama_service import OllamaService
 from app.services.research_service import ResearchService
 from app.services.search_service import SearchService
@@ -44,6 +47,18 @@ def get_assistant_service(request: Request) -> AssistantService:
         ConversationRepository(state.session_factory),
         get_research_service(request),
     )
+
+
+def get_music_controller(request: Request) -> MusicController:
+    # Una sola instancia por proceso (estado de reproducción compartido), creada en main.lifespan.
+    return request.app.state.music
+
+
+def get_music_commands(
+    controller: MusicController = Depends(get_music_controller),
+    settings: Settings = Depends(get_settings),
+) -> MusicCommands:
+    return MusicCommands(settings, controller)
 
 
 def get_selector_service(request: Request) -> SelectorService:
