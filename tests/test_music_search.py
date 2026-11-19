@@ -72,22 +72,52 @@ def test_search_uses_ytsearch_with_youtube_only_extractors_and_maps_entries() ->
     assert tracks[1].artist == "Canal" and tracks[1].duration_seconds is None
 
 
-def test_extract_resolves_https_audio_and_only_forwards_safe_headers() -> None:
+def test_extract_saves_the_info_privately_for_ytdlp_and_cleans_up() -> None:
+    import json
+    import os
+    import stat
+
     info = {
         "id": "dQw4w9WgXcQ",
         "title": "Tema",
+        "album": "Disco",
         "duration": 200,
         "url": "https://rr1.googlevideo.com/videoplayback?x=1",
-        "http_headers": {"User-Agent": "UA", "X-Evil": "1", "Referer": "a\nInjected: 1"},
     }
     extractor, calls, _ = ytdlp(info)
     found, source = asyncio.run(extractor.extract("dQw4w9WgXcQ"))
 
     assert calls[0]["target"] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     assert calls[0]["options"]["format"] == "bestaudio/best"
-    assert found.title == "Tema"
-    assert source.url.startswith("https://rr1.googlevideo.com/")
-    assert source.headers == {"User-Agent": "UA"}
+    assert found.title == "Tema" and found.album == "Disco"
+    assert found.thumbnail == "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+    with open(source.info_path, encoding="utf-8") as handle:
+        assert json.load(handle)["id"] == "dQw4w9WgXcQ"
+    assert stat.S_IMODE(os.stat(source.info_path).st_mode) == 0o600
+    assert stat.S_IMODE(os.stat(os.path.dirname(source.info_path)).st_mode) == 0o700
+    extractor.close()
+    assert not os.path.exists(source.info_path)
+
+
+def test_extract_keeps_only_the_latest_info_files() -> None:
+    import os
+
+    extractor, _, _ = ytdlp({})
+    paths = []
+    for n in range(5):
+        video_id = f"abcdefghij{n}"
+        extractor._factory = lambda options, v=video_id: type(
+            "Y", (), {"extract_info": lambda self, t, download: {"id": v, "title": "x", "url": "https://a/b"}}
+        )()
+        paths.append(asyncio.run(extractor.extract(video_id))[1].info_path)
+    assert [os.path.exists(p) for p in paths] == [False, False, True, True, True]
+    extractor.close()
+
+
+def test_extract_rejects_info_for_another_video() -> None:
+    extractor, _, _ = ytdlp({"id": "zzzzzzzzzzz", "title": "x", "url": "https://a/b"})
+    with pytest.raises(UpstreamServiceError):
+        asyncio.run(extractor.extract("dQw4w9WgXcQ"))
 
 
 def test_extract_rejects_invalid_ids_before_calling_ytdlp() -> None:

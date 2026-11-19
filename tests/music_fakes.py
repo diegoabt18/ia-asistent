@@ -1,4 +1,8 @@
-"""Dobles de prueba del módulo de música: yt-dlp, FFmpeg, pactl y reloj. Sin red, binarios ni audio."""
+"""Dobles de prueba del módulo de música: yt-dlp, FFmpeg, pactl y reloj. Sin red, binarios ni audio.
+
+Cada tramo de reproducción lanza dos procesos (ver stream.py): el descargador (yt-dlp) y el
+decodificador (FFmpeg). `FakeSpawn` los registra por separado: `decoders` / `downloaders`.
+"""
 
 import asyncio
 
@@ -13,12 +17,17 @@ BT_SINK = "bluez_output.AA_BB_CC_DD_EE_FF.1"
 
 
 def music_settings(**overrides) -> Settings:
-    values = {"api_key": "clave-musica", "music_enabled": True, **overrides}
+    # Espera corta: en las pruebas la confirmación llega en el mismo bucle o no llega.
+    values = {"api_key": "clave-musica", "music_enabled": True, "music_start_wait_seconds": 1.0, **overrides}
     return Settings(_env_file=None, **values)
 
 
 def track(n: int, duration: int | None = 200) -> Track:
     return Track(video_id=f"vid{n:08d}", title=f"Canción {n}", artist=f"Artista {n}", duration_seconds=duration)
+
+
+def info_path(video_id: str) -> str:
+    return f"/tmp/lumia-music-test/{video_id}.json"
 
 
 class FakeExtractor:
@@ -42,7 +51,7 @@ class FakeExtractor:
             raise self.error
         found = next((t for t in self.results if t.video_id == video_id), None)
         found = found or Track(video_id=video_id, title="Directa", artist=None, duration_seconds=180)
-        return found, AudioSource(url=f"https://audio.example/{video_id}", headers={"User-Agent": "ua"})
+        return found, AudioSource(info_path=info_path(video_id))
 
 
 class FakeStderr:
@@ -53,19 +62,37 @@ class FakeStderr:
         return self.data[:size]
 
 
-class FakeProcess:
-    """Un FFmpeg que "suena" hasta que lo matan o la prueba lo termina con finish()."""
+class FakeStdout:
+    """Salida de `-progress` de FFmpeg: líneas que la prueba empuja con FakeProcess.progress()."""
 
-    def __init__(self, stderr: bytes = b"") -> None:
+    def __init__(self) -> None:
+        self.lines: asyncio.Queue[bytes] = asyncio.Queue()
+
+    async def readline(self) -> bytes:
+        return await self.lines.get()
+
+
+class FakeProcess:
+    """Un proceso que "funciona" hasta que lo matan o la prueba lo termina con finish()."""
+
+    def __init__(self, stderr: bytes = b"", decoder: bool = False) -> None:
         self.stderr = FakeStderr(stderr)
+        self.stdout = FakeStdout() if decoder else None
         self.returncode: int | None = None
         self.killed = False
         self._done = asyncio.Event()
+
+    def progress(self, seconds: float) -> None:
+        """FFmpeg informa de que ya reprodujo `seconds` segundos."""
+        assert self.stdout is not None
+        self.stdout.lines.put_nowait(f"out_time_us={int(seconds * 1_000_000)}\n".encode())
 
     def finish(self, code: int = 0) -> None:
         if self.returncode is None:
             self.returncode = code
             self._done.set()
+            if self.stdout is not None:
+                self.stdout.lines.put_nowait(b"")  # fin de la salida
 
     def kill(self) -> None:
         self.killed = True
@@ -78,28 +105,56 @@ class FakeProcess:
 
 
 class FakeSpawn:
-    """Sustituye a asyncio.create_subprocess_exec. `exit_code` != None: el proceso termina solo."""
+    """Sustituye a asyncio.create_subprocess_exec.
 
-    def __init__(self, exit_code: int | None = None, stderr: bytes = b"") -> None:
+    - `confirm`: el FFmpeg falso informa enseguida de audio reproducido (1 s), como uno real que suena.
+    - `exit_code` != None: ambos procesos terminan solos con ese código (p. ej. 403 → fallo).
+    """
+
+    def __init__(self, exit_code: int | None = None, stderr: bytes = b"", confirm: bool = True) -> None:
         self.exit_code = exit_code
         self.stderr = stderr
+        self.confirm = confirm
         self.calls: list[tuple[str, ...]] = []
         self.processes: list[FakeProcess] = []
+        self.decoder_calls: list[tuple[str, ...]] = []
+        self.decoders: list[FakeProcess] = []
+        self.downloader_calls: list[tuple[str, ...]] = []
+        self.downloaders: list[FakeProcess] = []
 
     async def __call__(self, *args: str, **kwargs) -> FakeProcess:
+        decoder = args[0] == "ffmpeg"
+        proc = FakeProcess(self.stderr, decoder=decoder)
         self.calls.append(args)
-        proc = FakeProcess(self.stderr)
         self.processes.append(proc)
+        if decoder:
+            self.decoder_calls.append(args)
+            self.decoders.append(proc)
+            if self.confirm and self.exit_code is None:
+                proc.progress(1.0)
+        else:
+            self.downloader_calls.append(args)
+            self.downloaders.append(proc)
         if self.exit_code is not None:
             asyncio.get_running_loop().call_soon(proc.finish, self.exit_code)
         return proc
+
+    def end_track(self, n: int, code: int = 0) -> None:
+        """El tramo `n` termina solo: la descarga acaba y FFmpeg sale con `code`."""
+        self.downloaders[n].finish(0)
+        self.decoders[n].finish(code)
 
     @property
     def running(self) -> int:
         return sum(1 for p in self.processes if p.returncode is None)
 
     def arg(self, call: int, flag: str) -> str | None:
-        args = self.calls[call]
+        """Valor de una opción en la llamada `call` a FFmpeg (el decodificador)."""
+        args = self.decoder_calls[call]
+        return args[args.index(flag) + 1] if flag in args else None
+
+    def downloader_arg(self, call: int, flag: str) -> str | None:
+        args = self.downloader_calls[call]
         return args[args.index(flag) + 1] if flag in args else None
 
 
@@ -109,11 +164,16 @@ class FakeOutputs(AudioOutputs):
     def __init__(self, settings: Settings, sinks: list[str] | None = None) -> None:
         super().__init__(settings)
         self.sinks: list[str] | None = sinks if sinks is not None else [AUX_SINK]
+        self.volumes: list[int] = []
 
     async def list_sinks(self) -> list[str]:
         if self.sinks is None:
             raise OutputUnavailableError("aux", "no hay conexión con el servidor de sonido")
         return list(self.sinks)
+
+    async def set_stream_volume(self, percent: int) -> bool:
+        self.volumes.append(percent)
+        return True
 
 
 class FakeClock:
@@ -145,7 +205,7 @@ def make_controller(
     return controller, extractor, spawn, outputs, clock
 
 
-async def settle(rounds: int = 30) -> None:
+async def settle(rounds: int = 40) -> None:
     """Deja correr al bucle de reproducción hasta que se estabilice."""
     for _ in range(rounds):
         await asyncio.sleep(0)

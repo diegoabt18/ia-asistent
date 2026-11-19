@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     # servidor de Lumia, que ya comprueba sus permisos. Defensa adicional, no sustituye al servidor.
     music_control_user_refs: list[str] = []
     music_ffmpeg_path: str = "ffmpeg"
+    # yt-dlp descarga el audio y se lo pasa a FFmpeg por una tubería. YouTube rechaza (403) la URL de
+    # audio si la abre FFmpeg directamente: solo el descargador de yt-dlp consigue leerla.
+    music_ytdlp_path: str = "yt-dlp"
     # pactl (pulseaudio-utils) lista las salidas de audio del servidor de sonido (PulseAudio o PipeWire).
     music_pactl_path: str = "pactl"
     # Salida al arrancar: "aux" (jack de auriculares / línea) o "bluetooth" (parlante emparejado en el host).
@@ -96,8 +99,15 @@ class Settings(BaseSettings):
     # Vacío = automático: Bluetooth es la primera que empieza por "bluez_"; aux, la primera analógica.
     music_aux_sink: str = ""
     music_bluetooth_sink: str = ""
-    # Volumen de la música (porcentaje sobre el de la salida del sistema).
+    # Ganancia fija de FFmpeg (porcentaje sobre el de la salida del sistema). Margen para no saturar.
     music_volume_percent: int = Field(default=80, ge=0, le=150)
+    # Volumen inicial del reproductor (0-100). Se cambia en caliente con pactl, sin cortar el audio.
+    music_volume_default: int = Field(default=70, ge=0, le=100)
+    # Segundos que esperan los comandos (reproducir, siguiente…) a que el audio suene de verdad
+    # antes de responder. Si no llega a sonar en ese tiempo, se responde «cargando», nunca «sonando».
+    music_start_wait_seconds: float = Field(default=15.0, ge=0, le=60)
+    # Reintentos si la descarga se corta a mitad de canción (sigue desde donde iba).
+    music_stream_retries: int = Field(default=2, ge=0, le=5)
     music_sample_rate: int = 44100
     music_search_limit: int = 5
     music_search_timeout_seconds: float = 20.0

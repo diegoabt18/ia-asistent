@@ -7,11 +7,13 @@ elige el sink. `pactl list short sinks` devuelve una línea por sink, separada p
 """
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from app.core.config import Settings
+from app.services.music.stream import STREAM_APP
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,51 @@ class AudioOutputs:
             logger.warning("pactl falló: %s", stderr.decode("utf-8", "replace").strip()[:300])
             raise OutputUnavailableError("aux", "no hay conexión con el servidor de sonido")
         return parse_sinks(stdout.decode("utf-8", "replace"))
+
+    async def _pactl(self, *args: str) -> tuple[int, str]:
+        """Ejecuta pactl y devuelve (código, salida). Nunca lanza: -1 si no se pudo ejecutar."""
+        try:
+            proc = await self._spawn(
+                self._settings.music_pactl_path, *args,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except (FileNotFoundError, OSError):
+            return -1, ""
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), PACTL_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return -1, ""
+        return proc.returncode or 0, stdout.decode("utf-8", "replace")
+
+    async def set_stream_volume(self, percent: int) -> bool:
+        """Cambia el volumen del audio de la música en el servidor de sonido, sin cortarlo.
+
+        Busca el stream por su `application.name` (STREAM_APP). False si no suena nada o pactl falla.
+        """
+        level = max(0, min(100, int(percent)))
+        code, out = await self._pactl("--format=json", "list", "sink-inputs")
+        if code != 0:
+            return False
+        try:
+            items = json.loads(out)
+        except ValueError:
+            return False
+        index = next(
+            (
+                item.get("index")
+                for item in items if isinstance(item, dict)
+                and (item.get("properties") or {}).get("application.name") == STREAM_APP
+            ),
+            None,
+        )
+        if not isinstance(index, int):
+            return False
+        code, _ = await self._pactl("set-sink-input-volume", str(index), f"{level}%")
+        return code == 0
 
     async def resolve(self, mode: OutputMode) -> str:
         """Nombre del sink para el modo pedido, o OutputUnavailableError."""

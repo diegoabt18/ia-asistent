@@ -10,7 +10,13 @@ class TrackOut(BaseModel):
     video_id: str
     title: str
     artist: str | None = None
+    # Solo si YouTube lo indica; nunca se inventa.
+    album: str | None = None
     duration_seconds: int | None = None
+    # Miniatura pública de YouTube (i.ytimg.com) y página del vídeo.
+    thumbnail_url: str | None = None
+    url: str | None = None
+    source: Literal["youtube"] = "youtube"
 
 
 class OutputOut(BaseModel):
@@ -21,12 +27,17 @@ class OutputOut(BaseModel):
 
 
 class MusicStateOut(BaseModel):
-    status: Literal["idle", "playing", "paused"]
+    # idle: nada cargado · loading: pedida, aún no suena · playing: suena (confirmado por FFmpeg) ·
+    # paused · stopped: detenida con una pista · error: lo último falló y no suena nada.
+    status: Literal["idle", "loading", "playing", "paused", "stopped", "error"]
     # Cambia con cada pista nueva o al detener.
     generation: int
     current: TrackOut | None
     upcoming: list[TrackOut]
     position_seconds: int = 0
+    duration_seconds: int | None = None
+    # Volumen del reproductor (0-100).
+    volume: int = 0
     output: OutputOut
     # Último problema de reproducción (salida no disponible, pista que no se pudo reproducir).
     error: str | None = None

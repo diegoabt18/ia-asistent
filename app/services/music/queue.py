@@ -81,6 +81,15 @@ class MusicQueue:
         self._index -= 1
         return self.current
 
+    def skip(self, count: int) -> Track | None:
+        """Salta a la pista `count` de las pendientes (1 = la siguiente). None si no existe."""
+        target = self._index + count
+        if count < 1 or target >= len(self._items):
+            return None
+        self._index = target
+        self._ended = False
+        return self.current
+
     def clear(self) -> None:
         self._items.clear()
         self._index = -1

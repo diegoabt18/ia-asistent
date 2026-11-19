@@ -41,9 +41,13 @@ def step(tool: str, args: dict | None = None, user: str = "user-1"):
 def test_catalog_has_the_expected_tools_with_permissions() -> None:
     specs = {s.name: s for s in tool_specs()}
     assert set(specs) == {
-        "music.play", "music.search", "music.pause", "music.resume", "music.next",
-        "music.previous", "music.current", "music.output", "music.output_status",
+        "music.play", "music.search", "music.enqueue", "music.queue", "music.jump", "music.pause",
+        "music.resume", "music.stop", "music.next", "music.previous", "music.volume", "music.seek",
+        "music.current", "music.output", "music.output_status",
     }
+    assert specs["music.stop"].permission == specs["music.volume"].permission == "music.control"
+    assert specs["music.queue"].permission == "music.read"
+    assert [a.kind for a in specs["music.volume"].args] == ["int", ["up", "down"]]
     assert specs["music.play"].permission == "music.control"
     assert specs["music.output"].permission == "music.control"
     assert specs["music.output"].args[0].kind == ["aux", "bluetooth"]
@@ -62,11 +66,23 @@ def test_catalog_has_the_expected_tools_with_permissions() -> None:
         ("music.search", {}),
         ("music.search", {"query": "   "}),
         ("music.output", {}),
+        ("music.volume", {"level": 101}),
+        ("music.volume", {"level": True}),
+        ("music.volume", {"change": "max"}),
+        ("music.seek", {"position": "-5"}),
+        ("music.seek", {}),
+        ("music.jump", {"position": "dos"}),
     ],
 )
 def test_invalid_arguments_are_rejected(tool, args) -> None:
     with pytest.raises(InvalidCommandError):
         validate_args(tool, args)
+
+
+def test_integer_arguments_accept_numbers_and_numeric_text() -> None:
+    assert validate_args("music.volume", {"level": "35"}) == {"level": 35}
+    assert validate_args("music.volume", {"change": "up"}) == {"change": "up"}
+    assert validate_args("music.seek", {"position": 84}) == {"position": 84}
 
 
 def test_query_is_normalized_and_truncated() -> None:
@@ -104,12 +120,51 @@ def test_controls_and_current_song_texts() -> None:
     ])
     assert results[0].text == "No está sonando nada."
     assert results[1].error == "nothing_playing"
-    assert results[3].text == "Está sonando: «Canción 1» de Artista 1."
+    assert results[3].text == "Está sonando: «Canción 1» de Artista 1 (0:01 de 3:20)."
     assert results[4].ok and results[5].text.startswith("En pausa")
     assert results[6].text == "Reanudando «Canción 1» de Artista 1."
     assert results[7].ok is False and results[8].error == "not_found"
     # Sin más canciones, "siguiente" no corta la que suena.
     assert results[9].text.startswith("Está sonando")
+
+
+def test_stop_volume_seek_and_queue_commands() -> None:
+    commands, controller, outputs = build()
+    results = run_all(commands, controller, [
+        step("music.stop"),
+        step("music.play", {"query": "a"}),
+        step("music.enqueue", {"query": "b"}),
+        step("music.queue"),
+        step("music.volume", {"level": 35}),
+        step("music.volume", {"change": "up"}),
+        step("music.seek", {"position": 84}),
+        step("music.jump", {"position": 3}),
+        step("music.jump", {"position": 1}),
+        step("music.stop"),
+        step("music.current"),
+    ])
+    assert results[0].error == "nothing_playing"
+    assert results[2].text == "Añadí «Canción 1» de Artista 1 a la cola (posición 1)."
+    assert results[3].text == "Ahora: «Canción 1» de Artista 1.\nEn la cola:\n1. «Canción 1» de Artista 1 (3:20)"
+    assert results[4].text == "Volumen al 35 %." and results[5].text == "Volumen al 45 %."
+    assert results[6].text == "Listo, voy al 1:24."
+    assert results[7].error == "not_found"
+    assert results[8].ok and results[8].text == "Reproduciendo «Canción 1» de Artista 1."
+    assert results[9].text == "Música detenida." and results[10].text == "No está sonando nada."
+
+
+def test_play_never_claims_sound_that_did_not_start() -> None:
+    from music_fakes import FakeSpawn
+
+    settings = music_settings(music_start_wait_seconds=0.2)
+    controller, _, _, _, _ = make_controller(settings, spawn=FakeSpawn(confirm=False))
+    loading = run_all(MusicCommands(settings, controller), controller, [step("music.play", {"query": "a"})])[0]
+    assert loading.ok and loading.text.startswith("Cargando «Canción 1»")
+
+    controller, _, _, _, _ = make_controller(settings, spawn=FakeSpawn(exit_code=1))
+    failed = run_all(MusicCommands(settings, controller), controller, [step("music.play", {"query": "a"})])[0]
+    assert not failed.ok and failed.error == "playback_failed"
+    assert failed.text == "No pude reproducir «Canción 1» de Artista 1: no se pudo reproducir «Canción 1»."
 
 
 def test_output_commands() -> None:

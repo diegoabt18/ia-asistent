@@ -53,7 +53,14 @@ def test_tools_and_commands_flow(setup) -> None:
     response = http.post("/api/v1/music/commands", headers=USER, json={"tool": "music.play", "args": {"query": "soda"}})
     body = response.json()
     assert response.status_code == 200 and body["ok"] is True
-    assert body["state"]["status"] == "playing" and body["state"]["current"]["video_id"] == track(1).video_id
+    # Sin bucle de reproducción en estas pruebas: nunca suena, así que se dice «cargando», no «sonando».
+    assert body["text"].startswith("Cargando «Canción 1»")
+    assert body["state"]["status"] == "loading" and body["state"]["current"]["video_id"] == track(1).video_id
+    current = body["state"]["current"]
+    assert current["thumbnail_url"] == f"https://i.ytimg.com/vi/{track(1).video_id}/hqdefault.jpg"
+    assert current["url"] == f"https://www.youtube.com/watch?v={track(1).video_id}"
+    assert current["source"] == "youtube" and current["album"] is None
+    assert body["state"]["duration_seconds"] == 200 and body["state"]["volume"] == 70
     assert body["state"]["output"] == {"mode": "aux", "sink": None}
     assert body["state"]["error"] is None and body["state"]["position_seconds"] == 0
 
