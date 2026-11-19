@@ -74,7 +74,10 @@ Swagger: http://127.0.0.1:8000/docs
 | POST | `/api/v1/music/commands` | Sí + usuario | Ejecuta un comando de música `{tool, args}` y responde con texto determinista y el estado |
 | GET | `/api/v1/music/search?q=...` | Sí + usuario | Busca canciones (yt-dlp) sin reproducirlas |
 | GET | `/api/v1/music/state` | Sí + usuario | Estado del reproductor, cola, posición y salida |
-| POST / DELETE | `/api/v1/music/queue` | Sí + usuario | Añade una canción (`query` o `video_id`) / vacía la cola |
+| POST / DELETE | `/api/v1/music/queue` | Sí + usuario | Añade una canción (`query` o `video_id`; 409 si ya está en la cola) / vacía la cola |
+| GET | `/api/v1/music/events` | Sí + usuario | SSE del estado: uno al conectar y otro solo cuando algo visible cambia (`: ping` cada 15 s) |
+| GET | `/api/v1/music/recommendations?video_id=` | Sí + usuario | Relacionadas reales (Mix de YouTube), más del mismo artista y artistas relacionados (de la actual si no se indica) |
+| GET | `/api/v1/music/history` | Sí + usuario | Últimas canciones que sonaron (la más reciente primero) |
 | GET | `/api/v1/music/output` | Sí + usuario | Salida elegida y salidas que ofrece el host (503 si no hay servidor de sonido) |
 | PUT | `/api/v1/music/output` | Sí + usuario | Cambia la salida: `{"mode": "aux"}` o `{"mode": "bluetooth"}` (409 si no está disponible) |
 
@@ -110,9 +113,9 @@ Código en `app/services/music/`:
 | Archivo | Responsabilidad |
 |---|---|
 | `types.py` | `Track`, `AudioSource` y validación de IDs de YouTube |
-| `extract.py` | Único uso de yt-dlp: búsqueda (`ytsearchN:`) y URL de audio. Solo extractor de YouTube e IDs validados (sin SSRF) |
+| `extract.py` | Único uso de yt-dlp: búsqueda (`ytsearchN:`), relacionadas (Mix `list=RD<id>`, solo con IDs validados) e información de audio. Solo extractores de YouTube (sin SSRF) |
 | `search.py` | Reglas de búsqueda: límite de resultados y duración máxima |
-| `queue.py` | Cola con posición actual, anterior/siguiente, tamaño acotado |
+| `queue.py` | Cola con posición actual: anterior/siguiente, saltar, quitar, mover, vaciar, «a continuación», mezclar y volver al principio; tamaño acotado |
 | `player.py` | Estado (`idle`/`playing`/`paused`, `generation`) |
 | `output.py` | Salidas del host con `pactl`: elige el sink de `aux` o `bluetooth` |
 | `stream.py` | FFmpeg en subproceso que reproduce en un sink (`-f pulse`) |
@@ -121,7 +124,11 @@ Código en `app/services/music/`:
 
 **Asistente:** el servidor de Lumia obtiene el catálogo en `GET /music/tools`, lo añade a `/select` si el usuario tiene permiso (`music.read` para `search`, `current`, `output_status`; `music.control` para `play`, `pause`, `resume`, `next`, `previous`, `output`) y ejecuta lo que proponga el modelo con `POST /music/commands`. La respuesta es texto fijo, sin modelo. `MUSIC_CONTROL_USER_REFS` limita además quién puede controlar.
 
-**Cómo suena:** un bucle en segundo plano mantiene un FFmpeg reproduciendo la pista actual en la salida elegida. Pausar o cambiar de salida termina ese FFmpeg y al reanudar se abre otro desde la misma posición (tarda uno o dos segundos en volver a sonar). Al terminar una pista pasa a la siguiente. Si la salida desaparece (parlante apagado), la música queda en pausa con el aviso en `error`; si una pista falla, se salta.
+**Cómo suena:** un bucle en segundo plano mantiene un FFmpeg reproduciendo la pista actual en la salida elegida. Pausar o cambiar de salida termina ese FFmpeg y al reanudar se abre otro desde la misma posición (tarda uno o dos segundos en volver a sonar). Al terminar una pista decide el servidor (no el navegador): repetir la canción (`repeat_mode=one`), seguir con la cola, volver al principio (`all`) o, con la reproducción automática activada, añadir una canción relacionada real (Mix de YouTube) que no haya sonado hace poco ni esté en la cola, validándola antes (si no se puede resolver prueba hasta 3; si ninguna sirve, se detiene). Como máximo añade `MUSIC_AUTOPLAY_MAX_TRACKS` seguidas sin una orden del usuario. Si la salida desaparece (parlante apagado), la música queda en pausa con el aviso en `error`; si una pista falla, se salta.
+
+**Comandos** (`POST /music/commands`): `play` (`query` o `video_id`), `search`, `enqueue`, `play_next`, `queue`, `jump`, `remove`, `move`, `clear_queue`, `pause`, `resume`, `stop`, `next`, `previous`, `volume`, `seek`, `shuffle` (`state: on|off`), `repeat` (`repeat: off|one|all`), `autoplay` (`state: on|off`), `recommend`, `history`, `current`, `output`, `output_status`. El estado incluye `shuffle`, `repeat_mode`, `autoplay`, `version` (sube con cada cambio visible) y `updated_at` (ms).
+
+**Por qué yt-dlp alimenta a FFmpeg por una tubería:** YouTube responde 403 a la URL de audio si la abre cualquier cliente que no sea el descargador de yt-dlp (incluido FFmpeg). El controlador extrae la información una vez (`extract_info`, archivo privado 0600) y cada tramo ejecuta `yt-dlp --load-info-json … -o -` → `ffmpeg -i pipe:0 … -f pulse`. YouTube puede limitar la descarga a casi tiempo real: saltar hacia adelante puede tardar unos segundos.
 
 ### Preparar el servidor (una sola vez)
 

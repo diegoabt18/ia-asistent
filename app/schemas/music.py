@@ -41,9 +41,37 @@ class MusicStateOut(BaseModel):
     output: OutputOut
     # Último problema de reproducción (salida no disponible, pista que no se pudo reproducir).
     error: str | None = None
+    # Modos de reproducción (los decide el servidor al acabar cada pista).
+    shuffle: bool = False
+    repeat_mode: Literal["off", "one", "all"] = "off"
+    autoplay: bool = False
+    # Sube con cada cambio visible; updated_at = momento del estado (ms desde epoch) para la posición.
+    version: int = 0
+    updated_at: int = 0
 
 
 class MusicSearchResponse(BaseModel):
+    tracks: list[TrackOut]
+
+
+class ArtistOut(BaseModel):
+    name: str
+    # Canciones suyas entre las recomendadas.
+    tracks: int
+
+
+class MusicRecommendationsResponse(BaseModel):
+    # Canción de partida (la actual si no se indica otra). None si no hay ninguna.
+    seed: TrackOut | None
+    # Mix de YouTube de la semilla: canciones relacionadas reales.
+    tracks: list[TrackOut]
+    # Más canciones del mismo artista (búsqueda en YouTube).
+    artist_tracks: list[TrackOut]
+    # Artistas que aparecen en las recomendaciones (sin el de la semilla).
+    artists: list[ArtistOut]
+
+
+class MusicHistoryResponse(BaseModel):
     tracks: list[TrackOut]
 
 

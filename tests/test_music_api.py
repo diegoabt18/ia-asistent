@@ -105,3 +105,48 @@ def test_output_endpoints(setup) -> None:
     outputs.sinks = None
     assert http.get("/api/v1/music/output", headers=USER).status_code == 503
     assert controller.snapshot().output_mode == "bluetooth"
+
+
+def test_recommendations_history_and_state_modes(setup) -> None:
+    http, controller, _, _ = setup
+    controller._extractor.related_results = [track(4), track(5)]
+    empty = http.get("/api/v1/music/recommendations", headers=USER).json()
+    assert empty == {"seed": None, "tracks": [], "artist_tracks": [], "artists": []}
+    assert http.get("/api/v1/music/recommendations", headers=USER, params={"video_id": "../x"}).status_code == 422
+    found = http.get("/api/v1/music/recommendations", headers=USER, params={"video_id": track(1).video_id}).json()
+    assert [t["video_id"] for t in found["tracks"]] == [track(4).video_id, track(5).video_id]
+    assert {a["name"] for a in found["artists"]} == {"Artista 4", "Artista 5"}
+    assert http.get("/api/v1/music/history", headers=USER).json() == {"tracks": []}
+    state = http.get("/api/v1/music/state", headers=USER).json()
+    assert state["shuffle"] is False and state["repeat_mode"] == "off" and state["autoplay"] is False
+    assert state["updated_at"] > 0 and "version" in state
+
+
+def test_events_stream_sends_the_state_first_and_then_only_changes(setup) -> None:
+    # TestClient no avisa de la desconexión en streams infinitos: se llama a la ruta con una petición
+    # simulada que se desconecta tras unas vueltas.
+    import asyncio
+
+    from app.api.v1.music import events
+
+    _, controller, _, _ = setup
+
+    class Disconnecting:
+        def __init__(self) -> None:
+            self.checks = 0
+
+        async def is_disconnected(self) -> bool:
+            self.checks += 1
+            if self.checks == 2:
+                await controller.set_volume(25)  # un cambio real entre vueltas
+            return self.checks > 4
+
+    async def scenario():
+        response = await events(Disconnecting(), "user-music", controller)  # type: ignore[arg-type]
+        assert response.media_type == "text/event-stream"
+        return [chunk async for chunk in response.body_iterator]
+
+    chunks = asyncio.run(scenario())
+    assert len(chunks) == 2  # estado inicial + el cambio de volumen; sin repeticiones
+    assert chunks[0].startswith("event: state\ndata: ") and '"status": "idle"' in chunks[0]
+    assert '"volume": 25' in chunks[1]

@@ -1,3 +1,5 @@
+import random
+
 from app.services.music.types import Track
 
 
@@ -87,6 +89,54 @@ class MusicQueue:
         if count < 1 or target >= len(self._items):
             return None
         self._index = target
+        self._ended = False
+        return self.current
+
+    def insert_next(self, track: Track) -> None:
+        """Añade la pista justo después de la actual (la siguiente en sonar)."""
+        self._make_room()
+        self._items.insert(self._index + 1, track)
+
+    def _upcoming_index(self, position: int) -> int | None:
+        target = self._index + position
+        if position < 1 or target >= len(self._items):
+            return None
+        return target
+
+    def remove(self, position: int) -> Track | None:
+        """Quita la pista `position` de las pendientes (1 = la siguiente)."""
+        target = self._upcoming_index(position)
+        return None if target is None else self._items.pop(target)
+
+    def move(self, position: int, to: int) -> Track | None:
+        """Mueve una pendiente a otra posición de las pendientes (1 = la siguiente)."""
+        source = self._upcoming_index(position)
+        target = self._upcoming_index(to)
+        if source is None or target is None:
+            return None
+        track = self._items.pop(source)
+        self._items.insert(target, track)
+        return track
+
+    def clear_upcoming(self) -> int:
+        """Vacía las pendientes; conserva la actual y las escuchadas."""
+        removed = len(self._items) - (self._index + 1)
+        del self._items[self._index + 1 :]
+        return max(0, removed)
+
+    def shuffle_upcoming(self, rng: random.Random | None = None) -> None:
+        upcoming = self._items[self._index + 1 :]
+        (rng or random).shuffle(upcoming)
+        self._items[self._index + 1 :] = upcoming
+
+    def has_upcoming(self, video_id: str) -> bool:
+        return any(t.video_id == video_id for t in self.upcoming)
+
+    def restart(self) -> Track | None:
+        """Vuelve a la primera pista guardada (repetir la cola)."""
+        if not self._items:
+            return None
+        self._index = 0
         self._ended = False
         return self.current
 

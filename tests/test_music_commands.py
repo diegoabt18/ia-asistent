@@ -43,8 +43,12 @@ def test_catalog_has_the_expected_tools_with_permissions() -> None:
     assert set(specs) == {
         "music.play", "music.search", "music.enqueue", "music.queue", "music.jump", "music.pause",
         "music.resume", "music.stop", "music.next", "music.previous", "music.volume", "music.seek",
-        "music.current", "music.output", "music.output_status",
+        "music.current", "music.output", "music.output_status", "music.play_next", "music.remove",
+        "music.move", "music.clear_queue", "music.shuffle", "music.repeat", "music.autoplay",
+        "music.recommend", "music.history",
     }
+    assert specs["music.recommend"].permission == specs["music.history"].permission == "music.read"
+    assert specs["music.repeat"].args[0].kind == ["off", "one", "all"]
     assert specs["music.stop"].permission == specs["music.volume"].permission == "music.control"
     assert specs["music.queue"].permission == "music.read"
     assert [a.kind for a in specs["music.volume"].args] == ["int", ["up", "down"]]
@@ -236,3 +240,59 @@ def test_selector_prompt_only_mentions_music_when_its_tools_are_sent() -> None:
     assert '"tool":"music.pause"' in with_music
     assert '"mode":"bluetooth"' in with_music
     assert "mode:aux|bluetooth" in with_music
+
+
+def test_new_queue_and_mode_commands_answer_with_real_outcomes() -> None:
+    commands, controller, _ = build()
+    vid = track(2).video_id
+    results = run_all(commands, controller, [
+        step("music.play", {"video_id": track(1).video_id}),
+        step("music.enqueue", {"video_id": vid}),
+        step("music.enqueue", {"video_id": vid}),
+        step("music.play_next", {"video_id": track(3).video_id}),
+        step("music.move", {"position": 2, "to": 1}),
+        step("music.remove", {"position": 1}),
+        step("music.shuffle", {"state": "on"}),
+        step("music.repeat", {"repeat": "all"}),
+        step("music.autoplay", {"state": "on"}),
+        step("music.clear_queue"),
+        step("music.remove", {"position": 1}),
+        step("music.history"),
+    ])
+    texts = [r.text for r in results]
+    assert results[0].ok and texts[0].startswith("Reproduciendo «Canción 1»")
+    assert texts[1] == "Añadí «Canción 2» de Artista 2 a la cola (posición 1)."
+    assert results[2].error == "duplicate" and texts[2] == "«Canción 2» de Artista 2 ya está en la cola."
+    assert texts[3] == "«Canción 3» de Artista 3 sonará a continuación."
+    assert texts[4] == "«Canción 2» de Artista 2 ahora es la número 1 de la cola."
+    assert texts[5] == "Quité «Canción 2» de Artista 2 de la cola."
+    assert texts[6:9] == ["Modo aleatorio activado.", "Repetiré toda la cola.", texts[8]]
+    assert texts[8].startswith("Reproducción automática activada")
+    assert texts[9] == "Vacié la cola (1 canciones)."
+    assert results[10].error == "not_found"
+    assert texts[11].startswith("Sonaron hace poco:\n1. «Canción 1»")
+
+
+@pytest.mark.parametrize(
+    "tool,args",
+    [
+        ("music.enqueue", {}),
+        ("music.enqueue", {"query": "x", "video_id": "abcdefghijk"}),
+        ("music.play", {"video_id": "https://x.y/z"}),
+        ("music.repeat", {"repeat": "siempre"}),
+        ("music.shuffle", {"state": "maybe"}),
+        ("music.move", {"position": 1, "to": 0}),
+    ],
+)
+def test_new_commands_reject_bad_arguments(tool, args) -> None:
+    with pytest.raises(InvalidCommandError):
+        validate_args(tool, args)
+
+
+def test_recommend_lists_real_related_tracks() -> None:
+    commands, controller, _ = build()
+    controller._extractor.related_results = [track(4), track(5)]
+    results = run_all(commands, controller, [step("music.recommend"), step("music.play", {"query": "a"}), step("music.recommend")])
+    assert results[0].error == "nothing_playing"
+    assert results[2].ok and results[2].text.startswith("Parecidas a «Canción 1»")
+    assert [t.video_id for t in results[2].tracks] == [track(4).video_id, track(5).video_id]

@@ -10,12 +10,20 @@ Al acabar una pista pasa a la siguiente.
 
 Nada se da por «sonando» hasta que FFmpeg informa de audio reproducido (`Playback.started`): mientras
 tanto el estado es `loading`. Los comandos esperan esa confirmación (`wait_until_playing`).
+
+Al terminar una pista decide el propio servidor (sin depender del navegador): repetir la canción,
+seguir con la cola, volver al principio (repetir la cola) o, con la reproducción automática, añadir
+una canción relacionada real (Mix de YouTube) que no haya sonado hace poco.
+
+Cada cambio visible sube `version` y despierta a `wait_change` (eventos SSE del reproductor).
 """
 
 import asyncio
 import contextlib
 import logging
+import re
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -43,10 +51,35 @@ FAILURES_KEPT = 20
 #   stopped  detenido con una pista  error    lo último falló y no suena nada
 SnapshotStatus = Literal["idle", "loading", "playing", "paused", "stopped", "error"]
 WaitOutcome = Literal["playing", "loading", "failed", "superseded"]
+# off: la cola termina · one: repite la canción actual · all: al acabar la cola vuelve a empezar.
+RepeatMode = Literal["off", "one", "all"]
+REPEAT_MODES: tuple[RepeatMode, ...] = ("off", "one", "all")
+# Candidatas que la reproducción automática intenta resolver antes de rendirse.
+AUTOPLAY_ATTEMPTS = 3
+RECOMMENDATIONS_FETCH = 25
+RECOMMENDATIONS_CACHE_ITEMS = 20
 
 
 class NothingToPlayError(Exception):
     pass
+
+
+class AlreadyQueuedError(Exception):
+    def __init__(self, track: Track) -> None:
+        super().__init__(track.video_id)
+        self.track = track
+
+
+_BRACKETS_RE = re.compile(r"[\(\[][^\)\]]*[\)\]]")
+_NON_WORD_RE = re.compile(r"[^\w]+")
+
+
+def title_key(track: Track) -> str:
+    """Título normalizado para reconocer la misma canción en otra subida («(Official Video)», artista…)."""
+    text = _BRACKETS_RE.sub(" ", track.title.lower())
+    if track.artist:
+        text = text.replace(track.artist.lower(), " ")
+    return " ".join(_NON_WORD_RE.sub(" ", text).split())
 
 
 @dataclass(frozen=True)
@@ -63,6 +96,11 @@ class MusicSnapshot:
     volume: int
     # Último problema de reproducción (salida no disponible, pista que no se pudo reproducir).
     error: str | None
+    shuffle: bool = False
+    repeat_mode: RepeatMode = "off"
+    autoplay: bool = False
+    # Sube con cada cambio visible del estado (para no reenviar lo mismo).
+    version: int = 0
 
 
 class MusicController:
@@ -81,7 +119,17 @@ class MusicController:
         self._outputs = outputs or AudioOutputs(settings)
         self._clock = clock
         self._queue = MusicQueue(settings.music_queue_max_items)
-        self._player = PlayerState()
+        self._version = 0
+        self._state_event = asyncio.Event()
+        self._player = PlayerState(on_change=self._publish)
+        self._shuffle = False
+        self._repeat: RepeatMode = "off"
+        self._autoplay = settings.music_autoplay_default
+        # Canciones seguidas que añadió la reproducción automática sin una orden del usuario.
+        self._autoplay_streak = 0
+        # Últimas canciones que sonaron de verdad (la más reciente al final).
+        self._history: deque[Track] = deque(maxlen=settings.music_history_size)
+        self._recommendations: dict[str, tuple[float, list[Track]]] = {}
         self._lock = asyncio.Lock()
         self._source_cache: tuple[str, AudioSource, float] | None = None
         self._output_mode: OutputMode = settings.music_output_default
@@ -150,6 +198,7 @@ class MusicController:
         if query or video_id:
             track = await self._find(query, video_id)
             async with self._lock:
+                self._autoplay_streak = 0
                 self._queue.play_now(track)
                 self._start_track()
             return track
@@ -167,11 +216,93 @@ class MusicController:
             self._start_track()
             return track
 
-    async def enqueue(self, query: str | None = None, video_id: str | None = None) -> Track:
+    async def enqueue(
+        self, query: str | None = None, video_id: str | None = None, play_next: bool = False
+    ) -> Track:
+        """Añade a la cola (al final, o justo después de la actual con `play_next`). Sin duplicados
+        entre las pendientes: AlreadyQueuedError si ya está esperando."""
         track = await self._find(query, video_id)
         async with self._lock:
-            self._queue.add(track)
+            if self._queue.has_upcoming(track.video_id):
+                raise AlreadyQueuedError(track)
+            self._autoplay_streak = 0
+            if play_next:
+                self._queue.insert_next(track)
+            else:
+                self._queue.add(track)
+        self._publish()
         return track
+
+    async def remove(self, position: int) -> Track | None:
+        async with self._lock:
+            track = self._queue.remove(position)
+        if track:
+            self._publish()
+        return track
+
+    async def move(self, position: int, to: int) -> Track | None:
+        async with self._lock:
+            track = self._queue.move(position, to)
+        if track:
+            self._publish()
+        return track
+
+    async def clear_upcoming(self) -> int:
+        async with self._lock:
+            removed = self._queue.clear_upcoming()
+        self._publish()
+        return removed
+
+    async def set_shuffle(self, enabled: bool) -> bool:
+        """Aleatorio: al activarlo se mezclan las pendientes (la actual sigue sonando)."""
+        async with self._lock:
+            self._shuffle = enabled
+            if enabled:
+                self._queue.shuffle_upcoming()
+        self._publish()
+        return enabled
+
+    async def set_repeat(self, mode: RepeatMode) -> RepeatMode:
+        if mode not in REPEAT_MODES:
+            raise ValueError("modo de repetición no válido")
+        self._repeat = mode
+        self._publish()
+        return mode
+
+    async def set_autoplay(self, enabled: bool) -> bool:
+        self._autoplay = enabled
+        self._autoplay_streak = 0
+        self._publish()
+        return enabled
+
+    async def artist_tracks(self, artist: str, limit: int) -> list[Track]:
+        """Más canciones de un artista (búsqueda en YouTube), con la misma caché que las recomendaciones."""
+        key = f"artist:{artist.lower()}"
+        now = self._clock()
+        cached = self._recommendations.get(key)
+        if cached and now - cached[0] < self._settings.music_recommendations_cache_seconds:
+            return cached[1][:limit]
+        tracks = await self.search(artist, limit)
+        self._recommendations[key] = (now, tracks)
+        return tracks
+
+    def history(self) -> list[Track]:
+        """Canciones que sonaron, de la más reciente a la más antigua."""
+        return list(reversed(self._history))
+
+    async def recommendations(self, video_id: str, limit: int = 20) -> list[Track]:
+        """Canciones relacionadas reales (Mix de YouTube de ese vídeo), reproducibles."""
+        now = self._clock()
+        cached = self._recommendations.get(video_id)
+        ttl = self._settings.music_recommendations_cache_seconds
+        if cached and now - cached[0] < ttl:
+            return cached[1][:limit]
+        tracks = await self._extractor.related(video_id, RECOMMENDATIONS_FETCH)
+        tracks = [t for t in tracks if self._search.is_playable(t)]
+        self._recommendations[video_id] = (now, tracks)
+        for old in list(self._recommendations)[:-RECOMMENDATIONS_CACHE_ITEMS]:
+            del self._recommendations[old]
+        return tracks[:limit]
 
     async def pause(self) -> bool:
         async with self._lock:
@@ -187,11 +318,21 @@ class MusicController:
             return self._player.resume()
 
     async def next(self) -> Track | None:
-        """Pasa a la siguiente. Si no hay, no cambia nada (la canción actual sigue sonando)."""
+        """Pasa a la siguiente. Sin pendientes: con «repetir cola» vuelve a la primera; con la
+        reproducción automática añade una relacionada. Si no, no cambia nada (la actual sigue)."""
         async with self._lock:
-            if not self._queue.upcoming:
-                return None
-            return self._advance()
+            self._autoplay_streak = 0
+            if self._queue.upcoming:
+                return self._advance()
+            current = self._queue.current
+            generation = self._player.generation
+            if self._repeat == "all" and self._queue.restart() is not None:
+                self._start_track()
+                return self._queue.current
+        if current is None or not self._autoplay:
+            return None
+        self._ensure_runner()
+        return await self._autoplay_next(current, generation)
 
     async def previous(self) -> Track | None:
         async with self._lock:
@@ -204,6 +345,7 @@ class MusicController:
         """Reproduce la pista `position` de las pendientes (1 = la siguiente). None si no existe."""
         self._ensure_runner()
         async with self._lock:
+            self._autoplay_streak = 0
             track = self._queue.skip(position)
             if track:
                 self._start_track()
@@ -244,6 +386,7 @@ class MusicController:
     async def set_volume(self, level: int) -> int:
         """Cambia el volumen (0-100) al momento, sin cortar el audio. Se aplica también a los tramos nuevos."""
         self._volume = max(0, min(100, int(level)))
+        self._publish()
         if self._playback is not None and self._started_segment == self._segment:
             await self._apply_volume()
         return self._volume
@@ -295,12 +438,101 @@ class MusicController:
         """Sink que usaría ese modo ahora mismo, sin cambiar nada (OutputUnavailableError si no hay)."""
         return await self._outputs.resolve(mode)
 
+    # --- Fin de pista y reproducción automática ----------------------------------------------
+
+    async def _on_track_end(self, track: Track, generation: int) -> None:
+        """La pista terminó sola: decide qué suena después según repetir y la reproducción automática."""
+        async with self._lock:
+            if generation != self._player.generation or self._player.status != "playing":
+                return
+            if self._repeat == "one":
+                self._start_track()  # misma posición de la cola, generación nueva
+                return
+            if self._queue.upcoming:
+                self._advance()
+                return
+            if self._repeat == "all" and self._queue.restart() is not None:
+                self._start_track()
+                return
+            if not self._autoplay or self._autoplay_streak >= self._settings.music_autoplay_max_tracks:
+                self._advance()  # fin de la cola: se detiene
+                return
+        if await self._autoplay_next(track, generation) is None:
+            async with self._lock:
+                if generation == self._player.generation and self._player.status == "playing":
+                    self._advance()
+
+    async def _autoplay_next(self, current: Track, generation: int) -> Track | None:
+        """Añade una relacionada y la reproduce. None si no hay ninguna válida o algo cambió entretanto."""
+        pick = await self._autoplay_pick(current)
+        async with self._lock:
+            if generation != self._player.generation:
+                return None  # otra orden cambió la pista mientras se buscaba
+            if self._queue.upcoming:
+                return self._advance()  # alguien añadió algo mientras tanto: va primero
+            if pick is None:
+                return None
+            self._queue.add(pick)
+            self._autoplay_streak += 1
+            if self._player.status != "playing":
+                self._publish()
+                return None  # en pausa: queda en la cola
+            logger.info("Reproducción automática: %s", pick.video_id)
+            return self._advance()
+
+    async def _autoplay_pick(self, current: Track) -> Track | None:
+        """Primera recomendación real que no sonó hace poco ni está en la cola, y que se puede resolver."""
+        try:
+            candidates = await self.recommendations(current.video_id)
+        except (UpstreamServiceError, ValueError) as exc:
+            logger.warning("Sin recomendaciones para %s: %s", current.video_id, exc)
+            return None
+        recent = [*self._history, *self._queue.items, current]
+        seen_ids = {t.video_id for t in recent}
+        seen_titles = {title_key(t) for t in recent}
+        attempts = 0
+        for candidate in candidates:
+            if candidate.video_id in seen_ids or title_key(candidate) in seen_titles:
+                continue
+            attempts += 1
+            try:
+                # Extraer la valida (disponible, con audio) y deja su información lista para sonar.
+                return await self._find(None, candidate.video_id)
+            except (UpstreamServiceError, NothingToPlayError, ValueError) as exc:
+                logger.info("Recomendación %s descartada: %s", candidate.video_id, exc)
+                if attempts >= AUTOPLAY_ATTEMPTS:
+                    break
+        return None
+
+    def _remember(self, track: Track) -> None:
+        if not self._history or self._history[-1].video_id != track.video_id:
+            self._history.append(track)
+
     # --- Confirmación ----------------------------------------------------------------------
+
+    def _publish(self) -> None:
+        """Algo visible cambió: sube la versión y despierta a los suscriptores de eventos."""
+        self._version += 1
+        event, self._state_event = self._state_event, asyncio.Event()
+        event.set()
+
+    @property
+    def version(self) -> int:
+        return self._version
+
+    async def wait_change(self, version: int, timeout: float) -> int:
+        """Espera a que la versión cambie respecto de `version` (o a que pase `timeout`)."""
+        if self._version == version:
+            event = self._state_event
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(event.wait(), timeout)
+        return self._version
 
     def _bump(self) -> None:
         """Despierta a quien espera una confirmación o un fallo."""
         activity, self._activity = self._activity, asyncio.Event()
         activity.set()
+        self._publish()
 
     def failure(self, generation: int) -> str | None:
         return self._failures.get(generation)
@@ -366,6 +598,10 @@ class MusicController:
             position_seconds=int(position),
             volume=self._volume,
             error=self._error,
+            shuffle=self._shuffle,
+            repeat_mode=self._repeat,
+            autoplay=self._autoplay,
+            version=self._version,
         )
 
     # --- Reproducción en segundo plano -----------------------------------------------------
@@ -432,6 +668,7 @@ class MusicController:
                 self._started_segment = segment
                 self._started_generation = generation
                 self._retries = 0
+                self._remember(track)
                 self._bump()
                 await asyncio.wait({ended, waiter}, return_when=asyncio.FIRST_COMPLETED)
         finally:
@@ -441,6 +678,7 @@ class MusicController:
             await asyncio.gather(ended, return_exceptions=True)
             self._playback = None
             self._sink = None
+            self._publish()
             if generation == self._position_generation:
                 if self._seek_to is not None:
                     self._position, self._seek_to = self._seek_to, None
@@ -451,9 +689,7 @@ class MusicController:
             return  # pausa, otra pista, otra salida u otra posición: lo decide la siguiente vuelta
         downloader = await playback.downloader_code()
         if playback.returncode == 0 and downloader in (0, None):
-            async with self._lock:
-                if generation == self._player.generation and self._player.status == "playing":
-                    self._advance()  # pista terminada
+            await self._on_track_end(track, generation)  # pista terminada
             return
         tail = await self._ffmpeg.error_tail(playback)
         logger.warning(

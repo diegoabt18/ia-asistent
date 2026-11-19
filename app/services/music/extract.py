@@ -28,6 +28,9 @@ _YTDLP_LOGGER = logging.getLogger("yt_dlp")
 
 # Extractores permitidos (expresiones regulares sobre el nombre del extractor de yt-dlp).
 ALLOWED_EXTRACTORS = ["youtube", "youtube:search"]
+# Solo para las recomendaciones: el Mix de YouTube (lista RD<id>) lo resuelve youtube:tab. La URL se
+# construye siempre a partir de un ID validado, nunca de un texto del usuario.
+RELATED_EXTRACTORS = ["youtube", "youtube:tab"]
 # Archivos de información que se conservan a la vez (la pista actual y las últimas); el resto se borra.
 INFO_FILES_KEPT = 3
 
@@ -94,6 +97,21 @@ class YtDlpExtractor:
         )
         entries = info.get("entries") if isinstance(info, dict) else None
         tracks = [t for t in (_to_track(e) for e in entries or []) if t is not None]
+        return tracks[:limit]
+
+    async def related(self, video_id: str, limit: int) -> list[Track]:
+        """Canciones relacionadas reales: el Mix que YouTube genera para ese vídeo (sin la semilla)."""
+        url = f"{watch_url(video_id)}&list=RD{video_id}"  # watch_url valida el ID
+        options = {
+            **_base_options(self._settings.music_search_timeout_seconds),
+            "extract_flat": "in_playlist",
+            "noplaylist": False,
+            "playlistend": max(1, limit) + 1,
+            "allowed_extractors": RELATED_EXTRACTORS,
+        }
+        info = await self._run(options, url, self._settings.music_search_timeout_seconds)
+        entries = info.get("entries") if isinstance(info, dict) else None
+        tracks = [t for t in (_to_track(e) for e in entries or []) if t is not None and t.video_id != video_id]
         return tracks[:limit]
 
     async def extract(self, video_id: str) -> tuple[Track, AudioSource]:

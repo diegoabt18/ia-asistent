@@ -115,6 +115,14 @@ class Settings(BaseSettings):
     # Pistas más largas se descartan (evita directos de horas y mezclas que ocupan la cola).
     music_max_track_seconds: int = 900
     music_queue_max_items: int = 50
+    # Reproducción automática: al acabar la cola, añade una canción relacionada (Mix de YouTube).
+    music_autoplay_default: bool = False
+    # Máximo de canciones seguidas que añade la reproducción automática sin una orden del usuario.
+    music_autoplay_max_tracks: int = Field(default=25, ge=1, le=200)
+    # Canciones recientes que no se vuelven a recomendar ni a reproducir automáticamente.
+    music_history_size: int = Field(default=50, ge=5, le=500)
+    # Segundos que se reutilizan las recomendaciones de una misma canción.
+    music_recommendations_cache_seconds: float = Field(default=600.0, ge=0, le=86400)
 
 
 @lru_cache

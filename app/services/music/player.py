@@ -5,6 +5,7 @@ este estado tendría que pasar a Redis.
 """
 
 import asyncio
+from collections.abc import Callable
 from typing import Literal
 
 PlayerStatus = Literal["idle", "playing", "paused"]
@@ -14,10 +15,12 @@ class PlayerState:
     """Estado de reproducción. `generation` cambia cada vez que cambia la pista o se detiene: así el
     reproductor distingue "otra pista" de "la misma pista en otra posición o salida"."""
 
-    def __init__(self) -> None:
+    def __init__(self, on_change: Callable[[], None] | None = None) -> None:
         self._status: PlayerStatus = "idle"
         self._generation = 0
         self._changed = asyncio.Event()
+        # Aviso para quien publica el estado (eventos SSE del reproductor).
+        self._on_change = on_change
 
     @property
     def status(self) -> PlayerStatus:
@@ -31,6 +34,8 @@ class PlayerState:
         """Despierta a quien espera un cambio (el bucle de reproducción)."""
         changed, self._changed = self._changed, asyncio.Event()
         changed.set()
+        if self._on_change is not None:
+            self._on_change()
 
     def _set(self, status: PlayerStatus) -> None:
         self._status = status

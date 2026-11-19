@@ -7,6 +7,7 @@ decodificador (FFmpeg). `FakeSpawn` los registra por separado: `decoders` / `dow
 import asyncio
 
 from app.core.config import Settings
+from app.core.exceptions import UpstreamServiceError
 from app.services.music.controller import MusicController
 from app.services.music.output import AudioOutputs, OutputUnavailableError
 from app.services.music.stream import FfmpegPlayer
@@ -38,6 +39,17 @@ class FakeExtractor:
         self.error = error
         self.searches: list[tuple[str, int]] = []
         self.extractions: list[str] = []
+        # Mix de YouTube simulado para las recomendaciones (sin la semilla).
+        self.related_results: list[Track] = []
+        self.related_calls: list[str] = []
+        # IDs que fallan al extraerse (vídeo no disponible).
+        self.unavailable: set[str] = set()
+
+    async def related(self, video_id: str, limit: int) -> list[Track]:
+        self.related_calls.append(video_id)
+        if self.error:
+            raise self.error
+        return [t for t in self.related_results if t.video_id != video_id][:limit]
 
     async def search(self, query: str, limit: int) -> list[Track]:
         self.searches.append((query, limit))
@@ -49,6 +61,8 @@ class FakeExtractor:
         self.extractions.append(video_id)
         if self.error:
             raise self.error
+        if video_id in self.unavailable:
+            raise UpstreamServiceError("yt-dlp", "vídeo no disponible")
         found = next((t for t in self.results if t.video_id == video_id), None)
         found = found or Track(video_id=video_id, title="Directa", artist=None, duration_seconds=180)
         return found, AudioSource(info_path=info_path(video_id))
