@@ -1,13 +1,13 @@
-"""Transcodificación con FFmpeg: lee la URL de audio y entrega MP3 o PCM por trozos.
+"""Reproducción con FFmpeg: lee la URL de audio y la envía a una salida del servidor de sonido.
 
-Un proceso FFmpeg por stream abierto, sin ficheros temporales. La memoria queda acotada por el tamaño
-de trozo y el buffer de la tubería: FFmpeg solo avanza cuando el ESP32 lee (contrapresión de TCP), así
-que transcodifica al ritmo de reproducción y no en ráfaga.
+Un proceso FFmpeg por tramo de reproducción, sin ficheros temporales. FFmpeg escribe en PulseAudio
+(`-f pulse`), que consume al ritmo real del audio, así que descarga y decodifica en tiempo real y no en
+ráfaga. Pausar o cambiar de salida termina el proceso; al reanudar se abre otro desde la misma posición.
 """
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.core.config import Settings
@@ -22,26 +22,16 @@ Spawn = Callable[..., Awaitable[Any]]
 # FFmpeg solo puede abrir HTTPS (la URL viene de yt-dlp; nada de file:, concat:, etc.).
 PROTOCOL_WHITELIST = "https,tls,tcp"
 STDERR_TAIL_BYTES = 2000
+# Nombre con el que aparece la música en el mezclador del host (pavucontrol, pactl list sink-inputs).
+STREAM_NAME = "Lumia música"
 
 
-class FfmpegTranscoder:
+class FfmpegPlayer:
     def __init__(self, settings: Settings, spawn: Spawn = asyncio.create_subprocess_exec) -> None:
         self._settings = settings
         self._spawn = spawn
 
-    @property
-    def media_type(self) -> str:
-        return "audio/mpeg" if self._settings.music_output_format == "mp3" else "application/octet-stream"
-
-    def audio_headers(self) -> dict[str, str]:
-        """Cabeceras que describen el formato al ESP32 (necesarias con PCM, informativas con MP3)."""
-        return {
-            "X-Audio-Format": "mp3" if self._settings.music_output_format == "mp3" else "pcm_s16le",
-            "X-Audio-Sample-Rate": str(self._settings.music_sample_rate),
-            "X-Audio-Channels": "2",
-        }
-
-    def build_args(self, source: AudioSource) -> list[str]:
+    def build_args(self, source: AudioSource, sink: str, start_seconds: float = 0.0) -> list[str]:
         s = self._settings
         args = [
             s.music_ffmpeg_path,
@@ -51,36 +41,35 @@ class FfmpegTranscoder:
         ]
         if source.headers:
             args += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in source.headers.items())]
+        if start_seconds > 0:
+            # Antes de -i: salta en la fuente (petición HTTP con rango) sin descargar lo anterior.
+            args += ["-ss", f"{start_seconds:.1f}"]
         args += ["-i", source.url, "-vn", "-ac", "2", "-ar", str(s.music_sample_rate), "-threads", "1"]
-        if s.music_output_format == "mp3":
-            args += ["-c:a", "libmp3lame", "-b:a", f"{s.music_bitrate_kbps}k", "-f", "mp3"]
-        else:
-            args += ["-c:a", "pcm_s16le", "-f", "s16le"]
-        return [*args, "pipe:1"]
+        if s.music_volume_percent != 100:
+            args += ["-af", f"volume={s.music_volume_percent / 100:.2f}"]
+        return [*args, "-f", "pulse", "-device", sink, STREAM_NAME]
 
-    async def stream(self, source: AudioSource) -> AsyncIterator[bytes]:
-        """Entrega el audio por trozos. Si el consumidor deja de leer o se cancela, mata FFmpeg."""
+    async def start(self, source: AudioSource, sink: str, start_seconds: float = 0.0) -> Any:
+        """Lanza FFmpeg y devuelve el proceso (asyncio.subprocess.Process)."""
         try:
-            proc = await self._spawn(
-                *self.build_args(source),
+            return await self._spawn(
+                *self.build_args(source, sink, start_seconds),
                 stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
         except FileNotFoundError as exc:
             raise UpstreamServiceError("FFmpeg", "FFmpeg no está instalado") from exc
-        try:
-            while True:
-                chunk = await proc.stdout.read(self._settings.music_chunk_bytes)
-                if not chunk:
-                    break
-                yield chunk
-            code = await proc.wait()
-            if code != 0:
-                tail = (await proc.stderr.read(STDERR_TAIL_BYTES)).decode("utf-8", "replace").strip()
-                logger.warning("FFmpeg terminó con código %s: %s", code, tail)
-                raise UpstreamServiceError("FFmpeg", f"código de salida {code}")
-        finally:
-            if proc.returncode is None:
-                proc.kill()
-                await proc.wait()
+
+    @staticmethod
+    async def error_tail(proc: Any) -> str:
+        """Final de la salida de error de un FFmpeg ya terminado (para el log)."""
+        if proc.stderr is None:
+            return ""
+        return (await proc.stderr.read(STDERR_TAIL_BYTES)).decode("utf-8", "replace").strip()
+
+    @staticmethod
+    async def stop(proc: Any) -> None:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()

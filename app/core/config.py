@@ -1,6 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -80,30 +81,30 @@ class Settings(BaseSettings):
     redis_ssl: bool = False
     redis_key_prefix: str = "local-ai-assistant:"
 
-    # Módulo de música (búsqueda con yt-dlp, transcodificación con FFmpeg y stream HTTP a un ESP32).
+    # Módulo de música (búsqueda con yt-dlp y reproducción con FFmpeg en los altavoces del servidor).
     # Desactivado por defecto: con false, todas las rutas /music responden 404.
     music_enabled: bool = False
-    # Token del ESP32 (cabecera Authorization: Bearer). Distinto de API_KEY: el dispositivo solo
-    # controla la música, nunca el modelo. Vacío = las rutas del dispositivo responden 503.
-    music_device_token: str = ""
     # Usuarios (X-User-Ref) que pueden controlar la reproducción. Vacío = cualquiera que envíe el
     # servidor de Lumia, que ya comprueba sus permisos. Defensa adicional, no sustituye al servidor.
     music_control_user_refs: list[str] = []
     music_ffmpeg_path: str = "ffmpeg"
-    # Formato hacia el ESP32: "mp3" (poco ancho de banda) o "pcm" (s16le estéreo, sin decodificar).
-    music_output_format: Literal["mp3", "pcm"] = "mp3"
-    music_bitrate_kbps: int = 128
+    # pactl (pulseaudio-utils) lista las salidas de audio del servidor de sonido (PulseAudio o PipeWire).
+    music_pactl_path: str = "pactl"
+    # Salida al arrancar: "aux" (jack de auriculares / línea) o "bluetooth" (parlante emparejado en el host).
+    music_output_default: Literal["aux", "bluetooth"] = "aux"
+    # Nombre exacto de la salida (sink) de cada modo, como lo muestra `pactl list short sinks`.
+    # Vacío = automático: Bluetooth es la primera que empieza por "bluez_"; aux, la primera analógica.
+    music_aux_sink: str = ""
+    music_bluetooth_sink: str = ""
+    # Volumen de la música (porcentaje sobre el de la salida del sistema).
+    music_volume_percent: int = Field(default=80, ge=0, le=150)
     music_sample_rate: int = 44100
-    # Bytes por lectura de FFmpeg: es también el tamaño de cada trozo enviado al ESP32.
-    music_chunk_bytes: int = 4096
     music_search_limit: int = 5
     music_search_timeout_seconds: float = 20.0
     music_extract_timeout_seconds: float = 30.0
     # Pistas más largas se descartan (evita directos de horas y mezclas que ocupan la cola).
     music_max_track_seconds: int = 900
     music_queue_max_items: int = 50
-    # Sin latido durante este tiempo, el ESP32 se considera desconectado.
-    music_device_timeout_seconds: float = 15.0
 
 
 @lru_cache

@@ -4,20 +4,22 @@ from fastapi.testclient import TestClient
 from app.core.config import get_settings
 from app.core.dependencies import get_music_controller
 from app.main import app
-from music_fakes import make_controller, music_settings, track
+from music_fakes import AUX_SINK, BT_SINK, make_controller, music_settings, track
 
 KEY = "clave-musica"
 USER = {"X-API-Key": KEY, "X-User-Ref": "user-music"}
-DEVICE = {"Authorization": "Bearer token-esp32", "X-Device-Id": "esp32-sala"}
 
 
 @pytest.fixture
 def setup():
     state = {"settings": music_settings()}
-    controller, extractor, spawn, clock = make_controller(state["settings"])
+    controller, extractor, spawn, outputs, clock = make_controller(state["settings"], sinks=[AUX_SINK, BT_SINK])
+    # Cada petición del TestClient usa su propio bucle de eventos: el reproductor en segundo plano se
+    # prueba en test_music_controller.py. Aquí solo interesan las rutas y el estado.
+    controller._ensure_runner = lambda: None  # type: ignore[method-assign]
     app.dependency_overrides[get_settings] = lambda: state["settings"]
     app.dependency_overrides[get_music_controller] = lambda: controller
-    yield TestClient(app), controller, spawn, state
+    yield TestClient(app), controller, outputs, state
     app.dependency_overrides.clear()
 
 
@@ -25,7 +27,14 @@ def test_music_routes_are_hidden_when_disabled(setup) -> None:
     http, _, _, state = setup
     state["settings"] = music_settings(music_enabled=False)
     assert http.get("/api/v1/music/tools", headers=USER).status_code == 404
-    assert http.get("/api/v1/music/device/ping", headers=DEVICE).status_code == 404
+    assert http.get("/api/v1/music/output", headers=USER).status_code == 404
+
+
+def test_esp32_routes_no_longer_exist(setup) -> None:
+    http, _, _, _ = setup
+    device = {"Authorization": "Bearer x", "X-Device-Id": "esp32"}
+    assert http.get("/api/v1/music/device/ping", headers=device).status_code == 404
+    assert http.get("/api/v1/music/device/stream", headers=device).status_code == 404
 
 
 def test_server_routes_require_api_key_and_user(setup) -> None:
@@ -33,32 +42,20 @@ def test_server_routes_require_api_key_and_user(setup) -> None:
     assert http.get("/api/v1/music/state").status_code == 401
     assert http.get("/api/v1/music/state", headers={"X-API-Key": KEY}).status_code == 422
     assert http.get("/api/v1/music/state", headers=USER).status_code == 200
-    # El token del ESP32 no sirve como API key.
-    assert http.get("/api/v1/music/state", headers={**DEVICE, "X-User-Ref": "u"}).status_code == 401
-
-
-def test_device_routes_require_their_own_token(setup) -> None:
-    http, _, _, state = setup
-    assert http.get("/api/v1/music/device/ping", headers={"X-Device-Id": "esp"}).status_code == 401
-    assert http.get("/api/v1/music/device/ping", headers={**DEVICE, "Authorization": "Bearer otra"}).status_code == 401
-    # La API key tampoco abre las rutas del dispositivo.
-    assert http.get("/api/v1/music/device/ping", headers={"Authorization": f"Bearer {KEY}", "X-Device-Id": "e"}).status_code == 401
-    assert http.get("/api/v1/music/device/ping", headers={**DEVICE, "X-Device-Id": "../x"}).status_code == 422
-    response = http.get("/api/v1/music/device/ping", headers=DEVICE)
-    assert response.status_code == 200 and response.json()["device_id"] == "esp32-sala"
-    state["settings"] = music_settings(music_device_token="")
-    assert http.get("/api/v1/music/device/ping", headers=DEVICE).status_code == 503
+    assert http.put("/api/v1/music/output", json={"mode": "aux"}).status_code == 401
 
 
 def test_tools_and_commands_flow(setup) -> None:
     http, controller, _, _ = setup
     tools = http.get("/api/v1/music/tools", headers=USER).json()
-    assert {t["name"] for t in tools} >= {"music.play", "music.device_status"}
+    assert {t["name"] for t in tools} >= {"music.play", "music.output", "music.output_status"}
 
     response = http.post("/api/v1/music/commands", headers=USER, json={"tool": "music.play", "args": {"query": "soda"}})
     body = response.json()
     assert response.status_code == 200 and body["ok"] is True
     assert body["state"]["status"] == "playing" and body["state"]["current"]["video_id"] == track(1).video_id
+    assert body["state"]["output"] == {"mode": "aux", "sink": None}
+    assert body["state"]["error"] is None and body["state"]["position_seconds"] == 0
 
     bad = http.post("/api/v1/music/commands", headers=USER, json={"tool": "music.play", "args": {"url": "x"}})
     assert bad.status_code == 422
@@ -82,51 +79,22 @@ def test_search_and_queue_endpoints(setup) -> None:
     assert controller.snapshot().upcoming == []
 
 
-def test_device_heartbeat_state_and_control(setup) -> None:
-    http, controller, _, _ = setup
-    beat = http.post(
-        "/api/v1/music/device/heartbeat",
-        headers=DEVICE,
-        json={"bluetooth_connected": True, "bluetooth_sink": "JBL", "wifi_rssi": -55},
-    )
-    assert beat.status_code == 200
-    assert beat.json()["device"] == {
-        "connected": True, "device_id": "esp32-sala", "bluetooth_connected": True, "bluetooth_sink": "JBL",
-        "wifi_rssi": -55, "buffer_ms": None, "free_heap": None, "firmware": None,
-        "last_seen_seconds": 0.0, "reconnects": 0,
-    }
-    assert http.post("/api/v1/music/device/heartbeat", headers=DEVICE, json={"wifi_rssi": 20}).status_code == 422
+def test_output_endpoints(setup) -> None:
+    http, controller, outputs, state = setup
+    listed = http.get("/api/v1/music/output", headers=USER)
+    assert listed.status_code == 200 and listed.json() == {"mode": "aux", "sinks": [AUX_SINK, BT_SINK]}
 
-    http.post("/api/v1/music/commands", headers=USER, json={"tool": "music.play", "args": {"query": "a"}})
-    toggled = http.post("/api/v1/music/device/control", headers=DEVICE, json={"action": "toggle"}).json()
-    assert toggled["status"] == "paused"
-    assert http.get("/api/v1/music/device/state", headers=DEVICE).json()["status"] == "paused"
-    assert http.post("/api/v1/music/device/control", headers=DEVICE, json={"action": "reboot"}).status_code == 422
+    changed = http.put("/api/v1/music/output", headers=USER, json={"mode": "bluetooth"})
+    assert changed.status_code == 200 and changed.json()["output"]["mode"] == "bluetooth"
+    assert http.put("/api/v1/music/output", headers=USER, json={"mode": "hdmi"}).status_code == 422
 
+    outputs.sinks = [AUX_SINK]
+    refused = http.put("/api/v1/music/output", headers=USER, json={"mode": "bluetooth"})
+    assert refused.status_code == 409 and "no está conectado" in refused.json()["detail"]
 
-def test_device_stream_sends_audio_with_format_headers(setup) -> None:
-    http, controller, spawn, _ = setup
-    assert http.get("/api/v1/music/device/stream", headers=DEVICE).status_code == 204
+    state["settings"] = music_settings(music_control_user_refs=["otro"])
+    assert http.put("/api/v1/music/output", headers=USER, json={"mode": "aux"}).status_code == 403
 
-    http.post("/api/v1/music/commands", headers=USER, json={"tool": "music.play", "args": {"query": "a"}})
-    response = http.get("/api/v1/music/device/stream", headers=DEVICE)
-    assert response.status_code == 200
-    assert response.content == b"aaaabbbbcc"
-    assert response.headers["content-type"] == "audio/mpeg"
-    assert response.headers["x-music-generation"] == "1"
-    assert response.headers["x-track-id"] == track(1).video_id
-    assert response.headers["x-audio-format"] == "mp3"
-    assert spawn.running == 0
-    # Pista terminada y cola vacía: el reproductor vuelve a reposo.
-    assert controller.snapshot().status == "idle"
-
-
-def test_device_stream_upstream_failure_is_502(setup) -> None:
-    http, controller, _, _ = setup
-    http.post("/api/v1/music/commands", headers=USER, json={"tool": "music.play", "args": {"query": "a"}})
-    from app.core.exceptions import UpstreamServiceError
-
-    controller._source_cache = None
-    controller._extractor.error = UpstreamServiceError("yt-dlp", "caído")
-    response = http.get("/api/v1/music/device/stream", headers=DEVICE)
-    assert response.status_code == 502 and response.json() == {"detail": "Error en el servicio yt-dlp"}
+    outputs.sinks = None
+    assert http.get("/api/v1/music/output", headers=USER).status_code == 503
+    assert controller.snapshot().output_mode == "bluetooth"

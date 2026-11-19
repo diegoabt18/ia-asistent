@@ -1,10 +1,20 @@
-# Opcional: publica la API en la LAN para que el ESP32 (Wi-Fi) llegue al stream de música.
-# No cambia docker-compose.yml: se activa solo si se combina explícitamente:
-#   docker compose -f docker-compose.yml -f docker-compose.music.yml up -d --build
+# Opcional: deja que la música suene por los altavoces del host (jack auxiliar o parlante Bluetooth).
+# No cambia docker-compose.yml: se activa poniendo en .env
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.music.yml
+# y después basta con el comando de siempre: docker compose up -d --build
 #
-# Se publica únicamente en la IP de la LAN indicada (nunca 0.0.0.0). Ojo: el puerto expone toda la
-# API a la LAN; el resto de rutas siguen exigiendo X-API-Key y las del ESP32 su propio token.
+# El contenedor no toca la tarjeta de sonido ni el Bluetooth directamente: habla con el servidor de
+# sonido del host (PipeWire o PulseAudio) a través de su socket, que se monta aquí. El emparejamiento
+# Bluetooth se hace una vez en el host (ver README). Sin puertos publicados.
 services:
   api:
-    ports:
-      - "${MUSIC_DEVICE_BIND_ADDRESS:?define MUSIC_DEVICE_BIND_ADDRESS (IP LAN del host) en .env}:${MUSIC_DEVICE_PORT:-8000}:${API_PORT:-8000}"
+    environment:
+      PULSE_SERVER: unix:/run/lumia-pulse/native
+    volumes:
+      - type: bind
+        # Socket del usuario del host que tiene la sesión de sonido (UID 1000 por defecto).
+        source: ${MUSIC_PULSE_SOCKET:-/run/user/1000/pulse/native}
+        target: /run/lumia-pulse/native
+        bind:
+          # Si el socket no existe (servidor de sonido apagado), falla en vez de crear una carpeta.
+          create_host_path: false

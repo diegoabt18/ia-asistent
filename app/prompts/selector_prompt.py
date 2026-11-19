@@ -80,6 +80,10 @@ TOOL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "si solo pide buscarla sin reproducir, es music.search.",
         ("music.play", "music.search"),
     ),
+    (
+        "Si pide que la música suene por Bluetooth, por el parlante, por cable o por el auxiliar, es music.output.",
+        ("music.output",),
+    ),
 )
 
 def _out(module: str, status: str, intents: list[dict[str, Any]] | None = None, need: str = "") -> dict[str, Any]:
@@ -106,6 +110,7 @@ EXAMPLES: tuple[tuple[str, dict[str, Any]], ...] = (
     ("ponme algo de Soda Stereo", _out("musica", "tool", [{"tool": "music.play", "args": {"query": "Soda Stereo"}}])),
     ("para la música un momento", _out("musica", "tool", [{"tool": "music.pause", "args": {}}])),
     ("¿qué canción suena?", _out("musica", "tool", [{"tool": "music.current", "args": {}}])),
+    ("pásala al parlante bluetooth", _out("musica", "tool", [{"tool": "music.output", "args": {"mode": "bluetooth"}}])),
 )
 
 

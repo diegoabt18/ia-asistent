@@ -13,9 +13,10 @@ from typing import Any
 
 from app.core.config import Settings
 from app.core.exceptions import UpstreamServiceError
-from app.schemas.music import DeviceOut, MusicStateOut, MusicToolSpec, TrackOut
+from app.schemas.music import MusicStateOut, MusicToolSpec, OutputOut, TrackOut
 from app.schemas.select import SelectArg
 from app.services.music.controller import MusicController, MusicSnapshot, NothingToPlayError
+from app.services.music.output import OUTPUT_MODES, OutputMode, OutputUnavailableError
 from app.services.music.queue import QueueFullError
 from app.services.music.types import Track
 
@@ -25,6 +26,12 @@ MODULE = "musica"
 QUERY_MAX_CHARS = 200
 
 _QUERY_ARG = {"name": "query", "kind": "str", "description": "canción o artista tal como lo dice el usuario"}
+_MODE_ARG = {
+    "name": "mode",
+    "kind": list(OUTPUT_MODES),
+    "required": True,
+    "description": "aux = cable o jack; bluetooth = parlante inalámbrico",
+}
 
 # Catálogo: name, description, args, permission. "read" no cambia nada; "control" cambia lo que suena.
 _CATALOG: tuple[tuple[str, str, list[dict[str, Any]], str], ...] = (
@@ -36,12 +43,32 @@ _CATALOG: tuple[tuple[str, str, list[dict[str, Any]], str], ...] = (
     ("music.next", "Pasar a la siguiente canción", [], "music.control"),
     ("music.previous", "Volver a la canción anterior", [], "music.control"),
     ("music.current", "Qué canción está sonando ahora", [], "music.read"),
-    ("music.device_status", "Estado del altavoz de música (ESP32 y Bluetooth)", [], "music.read"),
+    ("music.output", "Cambiar por dónde suena la música: cable auxiliar o parlante Bluetooth",
+     [_MODE_ARG], "music.control"),
+    ("music.output_status", "Por dónde está sonando la música y si el parlante está conectado", [], "music.read"),
 )
 
 TOOL_PERMISSIONS = {name: permission for name, _, _, permission in _CATALOG}
 TOOL_ARGS = {name: {a["name"] for a in args} for name, _, args, _ in _CATALOG}
 REQUIRED_ARGS = {name: {a["name"] for a in args if a.get("required")} for name, _, args, _ in _CATALOG}
+
+OUTPUT_LABELS: dict[OutputMode, str] = {"aux": "el cable auxiliar", "bluetooth": "el parlante Bluetooth"}
+
+# Lo que el modelo o el usuario pueden decir para cada salida.
+_MODE_ALIASES: dict[str, OutputMode] = {
+    "aux": "aux", "auxiliar": "aux", "cable": "aux", "jack": "aux", "linea": "aux", "línea": "aux",
+    "bluetooth": "bluetooth", "bt": "bluetooth", "parlante": "bluetooth", "inalambrico": "bluetooth",
+    "inalámbrico": "bluetooth",
+}
+
+
+def parse_mode(value: str) -> OutputMode | None:
+    text = value.strip().lower()
+    if text in _MODE_ALIASES:
+        return _MODE_ALIASES[text]
+    if "blue" in text:
+        return "bluetooth"
+    return None
 
 
 def tool_specs() -> list[MusicToolSpec]:
@@ -70,32 +97,14 @@ def to_track(track: Track) -> TrackOut:
 
 
 def to_state(snap: MusicSnapshot) -> MusicStateOut:
-    report = snap.device
-    device = DeviceOut(
-        connected=snap.device_connected,
-        last_seen_seconds=snap.device_last_seen_seconds,
-        reconnects=snap.device_reconnects,
-        **(
-            {
-                "device_id": report.device_id,
-                "bluetooth_connected": report.bluetooth_connected,
-                "bluetooth_sink": report.bluetooth_sink,
-                "wifi_rssi": report.wifi_rssi,
-                "buffer_ms": report.buffer_ms,
-                "free_heap": report.free_heap,
-                "firmware": report.firmware,
-            }
-            if report
-            else {}
-        ),
-    )
     return MusicStateOut(
         status=snap.status,
         generation=snap.generation,
         current=to_track(snap.current) if snap.current else None,
         upcoming=[to_track(t) for t in snap.upcoming],
-        streaming=snap.streaming,
-        device=device,
+        position_seconds=snap.position_seconds,
+        output=OutputOut(mode=snap.output_mode, sink=snap.sink),
+        error=snap.error,
     )
 
 
@@ -113,27 +122,21 @@ def _duration(seconds: int | None) -> str:
     return f" ({seconds // 60}:{seconds % 60:02d})" if seconds else ""
 
 
-def _speaker_note(snap: MusicSnapshot) -> str:
-    if not snap.device_connected:
-        return " El altavoz no está conectado; sonará cuando se conecte."
-    if snap.device and not snap.device.bluetooth_connected:
-        return " El ESP32 está conectado, pero sin altavoz Bluetooth."
-    return ""
+def unavailable_text(exc: OutputUnavailableError) -> str:
+    return f"No puedo sonar por {OUTPUT_LABELS[exc.mode]}: {exc.reason}."
 
 
-def device_text(snap: MusicSnapshot) -> str:
-    report = snap.device
-    if report is None:
-        return "El altavoz de música nunca se ha conectado."
-    if not snap.device_connected:
-        return f"El altavoz no está conectado (último contacto hace {int(snap.device_last_seen_seconds or 0)} s)."
-    bluetooth = (
-        f"Bluetooth conectado a {report.bluetooth_sink}" if report.bluetooth_connected and report.bluetooth_sink
-        else "Bluetooth conectado" if report.bluetooth_connected
-        else "sin altavoz Bluetooth"
-    )
-    wifi = f", Wi-Fi {report.wifi_rssi} dBm" if report.wifi_rssi is not None else ""
-    return f"El altavoz está conectado ({bluetooth}{wifi})."
+def output_text(snap: MusicSnapshot) -> str:
+    label = OUTPUT_LABELS[snap.output_mode]
+    if snap.sink:
+        text = f"La música está sonando por {label}."
+    elif snap.status == "paused":
+        text = f"La música está en pausa; la salida elegida es {label}."
+    else:
+        text = f"No suena nada ahora; la salida elegida es {label}."
+    if snap.error:
+        text += f" Último problema: {snap.error}."
+    return text
 
 
 # --- Ejecución --------------------------------------------------------------------------------
@@ -191,7 +194,8 @@ class MusicCommands:
             "music.next": self._next,
             "music.previous": self._previous,
             "music.current": self._current,
-            "music.device_status": self._device_status,
+            "music.output": self._output,
+            "music.output_status": self._output_status,
         }
 
     async def execute(self, user_ref: str, tool: str, args: dict[str, Any]) -> CommandResult:
@@ -205,14 +209,15 @@ class MusicCommands:
             return CommandResult(tool, False, "No encontré ninguna canción para reproducir.", "not_found")
         except QueueFullError:
             return CommandResult(tool, False, "La cola de música está llena.", "queue_full")
+        except OutputUnavailableError as exc:
+            return CommandResult(tool, False, unavailable_text(exc), "output_unavailable")
         except UpstreamServiceError as exc:
             logger.warning("Comando %s falló: %s", tool, exc)
             return CommandResult(tool, False, "No pude acceder al servicio de música ahora mismo.", "upstream")
 
     async def _play(self, args: dict[str, str]) -> CommandResult:
         track = await self._controller.play(query=args.get("query"))
-        note = _speaker_note(self._controller.snapshot())
-        return CommandResult("music.play", True, f"Reproduciendo {describe(track)}.{note}", tracks=[track])
+        return CommandResult("music.play", True, f"Reproduciendo {describe(track)}.", tracks=[track])
 
     async def _search(self, args: dict[str, str]) -> CommandResult:
         tracks = await self._controller.search(args["query"])
@@ -251,5 +256,18 @@ class MusicCommands:
         prefix = "En pausa" if snap.status == "paused" else "Está sonando"
         return CommandResult("music.current", True, f"{prefix}: {describe(snap.current)}.", tracks=[snap.current])
 
-    async def _device_status(self, _: dict[str, str]) -> CommandResult:
-        return CommandResult("music.device_status", True, device_text(self._controller.snapshot()))
+    async def _output(self, args: dict[str, str]) -> CommandResult:
+        mode = parse_mode(args["mode"])
+        if mode is None:
+            return CommandResult("music.output", False, "Puedo sonar por el cable auxiliar o por Bluetooth.", "invalid_output")
+        await self._controller.set_output(mode)
+        return CommandResult("music.output", True, f"Listo, la música sonará por {OUTPUT_LABELS[mode]}.")
+
+    async def _output_status(self, _: dict[str, str]) -> CommandResult:
+        text = output_text(self._controller.snapshot())
+        try:
+            await self._controller.resolve_output("bluetooth")
+            text += " El parlante Bluetooth está conectado."
+        except OutputUnavailableError as exc:
+            text += f" Bluetooth: {exc.reason}."
+        return CommandResult("music.output_status", True, text)

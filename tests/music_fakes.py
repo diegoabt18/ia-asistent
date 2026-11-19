@@ -1,21 +1,19 @@
-"""Dobles de prueba del módulo de música: yt-dlp, FFmpeg (subproceso) y reloj. Sin red ni binarios."""
+"""Dobles de prueba del módulo de música: yt-dlp, FFmpeg, pactl y reloj. Sin red, binarios ni audio."""
 
 import asyncio
 
 from app.core.config import Settings
 from app.services.music.controller import MusicController
-from app.services.music.stream import FfmpegTranscoder
+from app.services.music.output import AudioOutputs, OutputUnavailableError
+from app.services.music.stream import FfmpegPlayer
 from app.services.music.types import AudioSource, Track
+
+AUX_SINK = "alsa_output.pci-0000_00_1f.3.analog-stereo"
+BT_SINK = "bluez_output.AA_BB_CC_DD_EE_FF.1"
 
 
 def music_settings(**overrides) -> Settings:
-    values = {
-        "api_key": "clave-musica",
-        "music_enabled": True,
-        "music_device_token": "token-esp32",
-        "music_chunk_bytes": 4,
-        **overrides,
-    }
+    values = {"api_key": "clave-musica", "music_enabled": True, **overrides}
     return Settings(_env_file=None, **values)
 
 
@@ -47,20 +45,6 @@ class FakeExtractor:
         return found, AudioSource(url=f"https://audio.example/{video_id}", headers={"User-Agent": "ua"})
 
 
-class FakeStdout:
-    def __init__(self, chunks: list[bytes], endless: bool) -> None:
-        self.chunks = list(chunks)
-        self.endless = endless
-        self.read_sizes: list[int] = []
-
-    async def read(self, size: int) -> bytes:
-        self.read_sizes.append(size)
-        await asyncio.sleep(0)
-        if self.chunks:
-            return self.chunks.pop(0)[:size]
-        return b"z" * size if self.endless else b""
-
-
 class FakeStderr:
     def __init__(self, data: bytes) -> None:
         self.data = data
@@ -70,42 +54,66 @@ class FakeStderr:
 
 
 class FakeProcess:
-    def __init__(self, chunks: list[bytes], code: int = 0, stderr: bytes = b"", endless: bool = False) -> None:
-        self.stdout = FakeStdout(chunks, endless)
+    """Un FFmpeg que "suena" hasta que lo matan o la prueba lo termina con finish()."""
+
+    def __init__(self, stderr: bytes = b"") -> None:
         self.stderr = FakeStderr(stderr)
         self.returncode: int | None = None
         self.killed = False
-        self._code = code
+        self._done = asyncio.Event()
+
+    def finish(self, code: int = 0) -> None:
+        if self.returncode is None:
+            self.returncode = code
+            self._done.set()
 
     def kill(self) -> None:
         self.killed = True
+        self.finish(-9)
 
     async def wait(self) -> int:
-        if self.returncode is None:
-            self.returncode = -9 if self.killed else self._code
+        await self._done.wait()
+        assert self.returncode is not None
         return self.returncode
 
 
 class FakeSpawn:
-    """Sustituye a asyncio.create_subprocess_exec. Cada llamada crea un FakeProcess nuevo."""
+    """Sustituye a asyncio.create_subprocess_exec. `exit_code` != None: el proceso termina solo."""
 
-    def __init__(self, chunks: list[bytes] | None = None, code: int = 0, stderr: bytes = b"", endless: bool = False) -> None:
-        self.chunks = chunks if chunks is not None else [b"aaaa", b"bbbb", b"cc"]
-        self.code = code
+    def __init__(self, exit_code: int | None = None, stderr: bytes = b"") -> None:
+        self.exit_code = exit_code
         self.stderr = stderr
-        self.endless = endless
         self.calls: list[tuple[str, ...]] = []
         self.processes: list[FakeProcess] = []
 
     async def __call__(self, *args: str, **kwargs) -> FakeProcess:
         self.calls.append(args)
-        proc = FakeProcess(self.chunks, self.code, self.stderr, self.endless)
+        proc = FakeProcess(self.stderr)
         self.processes.append(proc)
+        if self.exit_code is not None:
+            asyncio.get_running_loop().call_soon(proc.finish, self.exit_code)
         return proc
 
     @property
     def running(self) -> int:
         return sum(1 for p in self.processes if p.returncode is None)
+
+    def arg(self, call: int, flag: str) -> str | None:
+        args = self.calls[call]
+        return args[args.index(flag) + 1] if flag in args else None
+
+
+class FakeOutputs(AudioOutputs):
+    """Salidas del host sin pactl. `sinks = None` simula que el servidor de sonido no responde."""
+
+    def __init__(self, settings: Settings, sinks: list[str] | None = None) -> None:
+        super().__init__(settings)
+        self.sinks: list[str] | None = sinks if sinks is not None else [AUX_SINK]
+
+    async def list_sinks(self) -> list[str]:
+        if self.sinks is None:
+            raise OutputUnavailableError("aux", "no hay conexión con el servidor de sonido")
+        return list(self.sinks)
 
 
 class FakeClock:
@@ -116,15 +124,28 @@ class FakeClock:
         return self.now
 
 
-def make_controller(settings: Settings | None = None, extractor: FakeExtractor | None = None, spawn: FakeSpawn | None = None):
+def make_controller(
+    settings: Settings | None = None,
+    extractor: FakeExtractor | None = None,
+    spawn: FakeSpawn | None = None,
+    sinks: list[str] | None = None,
+):
     settings = settings or music_settings()
     extractor = extractor or FakeExtractor()
     spawn = spawn or FakeSpawn()
+    outputs = FakeOutputs(settings, sinks)
     clock = FakeClock()
     controller = MusicController(
         settings,
         extractor=extractor,  # type: ignore[arg-type]
-        transcoder=FfmpegTranscoder(settings, spawn=spawn),
+        player=FfmpegPlayer(settings, spawn=spawn),
+        outputs=outputs,
         clock=clock,
     )
-    return controller, extractor, spawn, clock
+    return controller, extractor, spawn, outputs, clock
+
+
+async def settle(rounds: int = 30) -> None:
+    """Deja correr al bucle de reproducción hasta que se estabilice."""
+    for _ in range(rounds):
+        await asyncio.sleep(0)

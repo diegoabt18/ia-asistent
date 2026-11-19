@@ -4,28 +4,49 @@ import pytest
 
 from app.core.exceptions import UpstreamServiceError
 from app.prompts.selector_prompt import build_system_prompt
-from app.services.music.commands import InvalidCommandError, MusicCommands, tool_specs, validate_args
-from app.services.music.player import DeviceReport
-from music_fakes import FakeExtractor, make_controller, music_settings, track
+from app.services.music.commands import (
+    InvalidCommandError,
+    MusicCommands,
+    parse_mode,
+    tool_specs,
+    validate_args,
+)
+from music_fakes import AUX_SINK, BT_SINK, FakeExtractor, make_controller, music_settings, settle, track
 
 
-def run(commands: MusicCommands, tool: str, args: dict | None = None, user: str = "user-1"):
-    return asyncio.run(commands.execute(user, tool, args or {}))
-
-
-def build(**settings_overrides):
+def build(sinks: list[str] | None = None, **settings_overrides):
     settings = music_settings(**settings_overrides)
-    controller, extractor, spawn, clock = make_controller(settings)
-    return MusicCommands(settings, controller), controller, extractor, clock
+    controller, extractor, spawn, outputs, clock = make_controller(settings, sinks=sinks)
+    return MusicCommands(settings, controller), controller, outputs
+
+
+def run_all(commands: MusicCommands, controller, steps):
+    """Ejecuta varios comandos en el mismo bucle (el reproductor vive en segundo plano)."""
+
+    async def scenario():
+        results = []
+        for tool, args, user in steps:
+            results.append(await commands.execute(user, tool, args))
+            await settle()
+        await controller.close()
+        return results
+
+    return asyncio.run(scenario())
+
+
+def step(tool: str, args: dict | None = None, user: str = "user-1"):
+    return (tool, args or {}, user)
 
 
 def test_catalog_has_the_expected_tools_with_permissions() -> None:
     specs = {s.name: s for s in tool_specs()}
     assert set(specs) == {
-        "music.play", "music.search", "music.pause", "music.resume",
-        "music.next", "music.previous", "music.current", "music.device_status",
+        "music.play", "music.search", "music.pause", "music.resume", "music.next",
+        "music.previous", "music.current", "music.output", "music.output_status",
     }
     assert specs["music.play"].permission == "music.control"
+    assert specs["music.output"].permission == "music.control"
+    assert specs["music.output"].args[0].kind == ["aux", "bluetooth"]
     assert specs["music.current"].permission == "music.read"
     assert specs["music.search"].args[0].required is True
     assert all(s.module == "musica" for s in specs.values())
@@ -40,6 +61,7 @@ def test_catalog_has_the_expected_tools_with_permissions() -> None:
         ("music.play", {"query": 5}),
         ("music.search", {}),
         ("music.search", {"query": "   "}),
+        ("music.output", {}),
     ],
 )
 def test_invalid_arguments_are_rejected(tool, args) -> None:
@@ -52,65 +74,100 @@ def test_query_is_normalized_and_truncated() -> None:
     assert len(validate_args("music.play", {"query": "y" * 500})["query"]) == 200
 
 
-def test_play_reports_track_and_disconnected_speaker() -> None:
-    commands, _, _, _ = build()
-    result = run(commands, "music.play", {"query": "soda"})
-    assert result.ok and result.tracks == [track(1)]
-    assert result.text.startswith("Reproduciendo «Canción 1» de Artista 1.")
-    assert "no está conectado" in result.text
+def test_output_mode_aliases() -> None:
+    assert parse_mode("Bluetooth") == parse_mode("parlante bluetooth") == parse_mode("bt") == "bluetooth"
+    assert parse_mode("aux") == parse_mode("Cable") == parse_mode("jack") == "aux"
+    assert parse_mode("hdmi") is None
 
 
-def test_search_lists_results_with_duration() -> None:
-    commands, _, _, _ = build()
-    result = run(commands, "music.search", {"query": "soda"})
-    assert result.ok and len(result.tracks) == 3
-    assert "1. «Canción 1» de Artista 1 (3:20)" in result.text
+def test_play_and_search_texts() -> None:
+    commands, controller, _ = build()
+    play, search = run_all(commands, controller, [step("music.play", {"query": "soda"}), step("music.search", {"query": "soda"})])
+    assert play.ok and play.tracks == [track(1)] and play.text == "Reproduciendo «Canción 1» de Artista 1."
+    assert search.ok and len(search.tracks) == 3
+    assert "1. «Canción 1» de Artista 1 (3:20)" in search.text
 
 
 def test_controls_and_current_song_texts() -> None:
-    commands, controller, _, _ = build()
-    assert run(commands, "music.current").text == "No está sonando nada."
-    assert run(commands, "music.pause").error == "nothing_playing"
-    run(commands, "music.play", {"query": "a"})
-    assert run(commands, "music.current").text == "Está sonando: «Canción 1» de Artista 1."
-    assert run(commands, "music.pause").ok
-    assert run(commands, "music.current").text.startswith("En pausa")
-    assert run(commands, "music.resume").text == "Reanudando «Canción 1» de Artista 1."
-    assert run(commands, "music.previous").ok is False
-    assert run(commands, "music.next").error == "not_found"
+    commands, controller, _ = build()
+    results = run_all(commands, controller, [
+        step("music.current"),
+        step("music.pause"),
+        step("music.play", {"query": "a"}),
+        step("music.current"),
+        step("music.pause"),
+        step("music.current"),
+        step("music.resume"),
+        step("music.previous"),
+        step("music.next"),
+        step("music.current"),
+    ])
+    assert results[0].text == "No está sonando nada."
+    assert results[1].error == "nothing_playing"
+    assert results[3].text == "Está sonando: «Canción 1» de Artista 1."
+    assert results[4].ok and results[5].text.startswith("En pausa")
+    assert results[6].text == "Reanudando «Canción 1» de Artista 1."
+    assert results[7].ok is False and results[8].error == "not_found"
     # Sin más canciones, "siguiente" no corta la que suena.
-    assert controller.snapshot().status == "playing"
+    assert results[9].text.startswith("Está sonando")
 
 
-def test_device_status_text() -> None:
-    commands, controller, _, clock = build()
-    assert run(commands, "music.device_status").text == "El altavoz de música nunca se ha conectado."
-    controller.heartbeat(DeviceReport(device_id="esp", bluetooth_connected=True, bluetooth_sink="JBL", wifi_rssi=-60))
-    assert run(commands, "music.device_status").text == "El altavoz está conectado (Bluetooth conectado a JBL, Wi-Fi -60 dBm)."
-    clock.now += 30
-    assert "no está conectado" in run(commands, "music.device_status").text
+def test_output_commands() -> None:
+    commands, controller, outputs = build(sinks=[AUX_SINK])
+    results = run_all(commands, controller, [
+        step("music.output", {"mode": "bluetooth"}),
+        step("music.output_status"),
+        step("music.output", {"mode": "hdmi"}),
+    ])
+    assert results[0].ok is False and results[0].error == "output_unavailable"
+    assert results[0].text == "No puedo sonar por el parlante Bluetooth: el parlante Bluetooth no está conectado."
+    assert results[1].text == (
+        "No suena nada ahora; la salida elegida es el cable auxiliar. "
+        "Bluetooth: el parlante Bluetooth no está conectado."
+    )
+    assert results[2].error == "invalid_output"
+
+    commands, controller, _ = build(sinks=[AUX_SINK, BT_SINK])
+    results = run_all(commands, controller, [
+        step("music.output", {"mode": "bluetooth"}),
+        step("music.play", {"query": "a"}),
+        step("music.output_status"),
+    ])
+    assert results[0].ok and results[0].text == "Listo, la música sonará por el parlante Bluetooth."
+    assert results[2].text == "La música está sonando por el parlante Bluetooth. El parlante Bluetooth está conectado."
+
+
+def test_play_without_sound_output_is_a_friendly_error() -> None:
+    commands, controller, outputs = build()
+    outputs.sinks = None
+    (result,) = run_all(commands, controller, [step("music.play", {"query": "a"})])
+    assert result.ok is False and result.error == "output_unavailable"
+    assert "servidor de sonido" in result.text
 
 
 def test_control_permission_is_enforced_but_read_tools_stay_available() -> None:
-    commands, controller, _, _ = build(music_control_user_refs=["user-admin"])
-    denied = run(commands, "music.play", {"query": "a"}, user="user-guest")
-    assert denied.ok is False and denied.error == "forbidden"
-    assert controller.snapshot().status == "idle"
-    assert run(commands, "music.current", user="user-guest").ok
-    assert run(commands, "music.play", {"query": "a"}, user="user-admin").ok
+    commands, controller, _ = build(music_control_user_refs=["user-admin"])
+    denied, output, current, allowed = run_all(commands, controller, [
+        step("music.play", {"query": "a"}, user="user-guest"),
+        step("music.output", {"mode": "aux"}, user="user-guest"),
+        step("music.current", user="user-guest"),
+        step("music.play", {"query": "a"}, user="user-admin"),
+    ])
+    assert denied.error == "forbidden" and output.error == "forbidden"
+    assert current.ok and allowed.ok
 
 
 def test_upstream_failures_become_friendly_answers() -> None:
     settings = music_settings()
-    controller, _, _, _ = make_controller(settings, extractor=FakeExtractor(error=UpstreamServiceError("yt-dlp", "x")))
-    result = run(MusicCommands(settings, controller), "music.play", {"query": "a"})
+    controller, *_ = make_controller(settings, extractor=FakeExtractor(error=UpstreamServiceError("yt-dlp", "x")))
+    result = asyncio.run(MusicCommands(settings, controller).execute("u", "music.play", {"query": "a"}))
     assert result.ok is False and result.error == "upstream"
 
 
 def test_no_results_is_reported_as_not_found() -> None:
     settings = music_settings()
-    controller, _, _, _ = make_controller(settings, extractor=FakeExtractor(results=[]))
-    result = run(MusicCommands(settings, controller), "music.play", {"query": "nada"})
+    controller, *_ = make_controller(settings, extractor=FakeExtractor(results=[]))
+    result = asyncio.run(MusicCommands(settings, controller).execute("u", "music.play", {"query": "nada"}))
     assert result.error == "not_found"
 
 
@@ -120,5 +177,7 @@ def test_selector_prompt_only_mentions_music_when_its_tools_are_sent() -> None:
     assert "music." not in without
     music = [s.model_dump(include={"name", "description", "args"}) for s in tool_specs()]
     with_music = build_system_prompt(store + music, ["productos", "musica"])
-    assert "es music.play" in with_music
+    assert "es music.play" in with_music and "es music.output" in with_music
     assert '"tool":"music.pause"' in with_music
+    assert '"mode":"bluetooth"' in with_music
+    assert "mode:aux|bluetooth" in with_music

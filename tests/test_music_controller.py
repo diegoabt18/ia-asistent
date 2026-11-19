@@ -2,21 +2,20 @@ import asyncio
 
 import pytest
 
+from app.core.exceptions import UpstreamServiceError
 from app.services.music.controller import NothingToPlayError
-from app.services.music.player import DeviceReport
-from music_fakes import FakeExtractor, FakeSpawn, make_controller, track
-
-
-async def drain(chunks) -> list[bytes]:
-    return [c async for c in chunks]
+from app.services.music.output import OutputUnavailableError
+from music_fakes import AUX_SINK, BT_SINK, FakeExtractor, FakeSpawn, make_controller, settle, track
 
 
 def test_play_with_query_plays_first_result_and_bumps_generation() -> None:
-    controller, extractor, _, _ = make_controller()
+    controller, extractor, _, _, _ = make_controller()
 
     async def scenario():
         played = await controller.play(query="soda")
-        return played, controller.snapshot()
+        snap = controller.snapshot()
+        await controller.close()
+        return played, snap
 
     played, snap = asyncio.run(scenario())
     assert played == track(1)
@@ -25,26 +24,13 @@ def test_play_with_query_plays_first_result_and_bumps_generation() -> None:
 
 
 def test_play_without_anything_queued_raises() -> None:
-    controller, _, _, _ = make_controller()
+    controller, _, _, _, _ = make_controller()
     with pytest.raises(NothingToPlayError):
         asyncio.run(controller.play())
 
 
-def test_play_with_video_id_extracts_once_and_reuses_source_for_streaming() -> None:
-    controller, extractor, spawn, _ = make_controller()
-
-    async def scenario():
-        await controller.play(video_id=track(2).video_id)
-        session = await controller.open_stream()
-        await drain(session.chunks)
-
-    asyncio.run(scenario())
-    assert extractor.extractions == [track(2).video_id]  # caché: no repite la extracción
-    assert spawn.calls[0][spawn.calls[0].index("-i") + 1] == f"https://audio.example/{track(2).video_id}"
-
-
 def test_pause_resume_next_previous() -> None:
-    controller, _, _, _ = make_controller()
+    controller, _, _, _, _ = make_controller()
 
     async def scenario():
         await controller.enqueue(query="a")
@@ -63,147 +49,173 @@ def test_pause_resume_next_previous() -> None:
         assert controller.snapshot().status == "playing"  # la última sigue sonando
         await controller.stop()
         assert controller.snapshot().status == "idle"
+        await controller.close()
 
     asyncio.run(scenario())
 
 
-def test_stream_returns_none_when_idle() -> None:
-    controller, _, spawn, _ = make_controller()
-    assert asyncio.run(controller.open_stream()) is None
-    assert spawn.calls == []
+# --- Reproducción en el servidor ---------------------------------------------------------------
 
 
-def test_finished_track_advances_to_the_next_one() -> None:
-    controller, _, _, _ = make_controller()
+def test_play_starts_ffmpeg_on_the_aux_output_and_reuses_the_extracted_source() -> None:
+    controller, extractor, spawn, _, _ = make_controller()
+
+    async def scenario():
+        await controller.play(video_id=track(2).video_id)
+        await settle()
+        snap = controller.snapshot()
+        await controller.close()
+        return snap
+
+    snap = asyncio.run(scenario())
+    assert extractor.extractions == [track(2).video_id]  # caché: no repite la extracción
+    assert spawn.arg(0, "-i") == f"https://audio.example/{track(2).video_id}"
+    assert spawn.arg(0, "-device") == AUX_SINK
+    assert snap.sink == AUX_SINK and snap.output_mode == "aux"
+    assert spawn.running == 0  # close() mata FFmpeg
+
+
+def test_pause_stops_ffmpeg_and_resume_continues_where_it_was() -> None:
+    controller, _, spawn, _, clock = make_controller()
+
+    async def scenario():
+        await controller.play(query="a")
+        await settle()
+        clock.now += 30
+        assert controller.snapshot().position_seconds == 30
+        await controller.pause()
+        await settle()
+        paused = (spawn.running, controller.snapshot().sink, controller.snapshot().position_seconds)
+        clock.now += 100  # el tiempo en pausa no cuenta
+        await controller.resume()
+        await settle()
+        await controller.close()
+        return paused
+
+    running, sink, position = asyncio.run(scenario())
+    assert spawn.processes[0].killed
+    assert (running, sink, position) == (0, None, 30)
+    assert len(spawn.calls) == 2 and spawn.arg(1, "-ss") == "30.0"
+
+
+def test_finished_track_advances_and_the_queue_ends_idle() -> None:
+    controller, _, spawn, _, _ = make_controller()
 
     async def scenario():
         await controller.enqueue(query="a")
         controller._extractor.results = [track(2)]
         await controller.enqueue(query="b")
         await controller.play()
-        session = await controller.open_stream()
-        data = await drain(session.chunks)
-        return data, session, controller.snapshot()
+        await settle()
+        spawn.processes[0].finish(0)
+        await settle()
+        middle = controller.snapshot()
+        spawn.processes[1].finish(0)
+        await settle()
+        end = controller.snapshot()
+        await controller.close()
+        return middle, end
 
-    data, session, snap = asyncio.run(scenario())
-    assert b"".join(data) == b"aaaabbbbcc"
-    assert session.media_type == "audio/mpeg"
-    assert snap.current == track(2) and snap.generation == session.generation + 1
-
-
-def test_pause_stops_sending_audio_until_resume() -> None:
-    controller, _, _, _ = make_controller(spawn=FakeSpawn([], endless=True))
-
-    async def scenario():
-        await controller.play(query="a")
-        session = await controller.open_stream()
-        first = await session.chunks.__anext__()
-        await controller.pause()
-        pending = asyncio.create_task(session.chunks.__anext__())
-        for _ in range(20):
-            await asyncio.sleep(0)
-        blocked = not pending.done()
-        await controller.resume()
-        second = await asyncio.wait_for(pending, 1)
-        await session.chunks.aclose()
-        return first, blocked, second
-
-    first, blocked, second = asyncio.run(scenario())
-    assert first and second and blocked
+    middle, end = asyncio.run(scenario())
+    assert middle.current == track(2) and middle.status == "playing"
+    assert spawn.arg(1, "-i") == f"https://audio.example/{track(2).video_id}" and spawn.arg(1, "-ss") is None
+    assert end.status == "idle" and len(spawn.calls) == 2
 
 
-def test_track_change_ends_the_open_stream_and_kills_ffmpeg() -> None:
-    spawn = FakeSpawn([], endless=True)
-    controller, _, _, _ = make_controller(spawn=spawn)
+def test_a_new_track_replaces_the_one_playing() -> None:
+    controller, _, spawn, _, _ = make_controller()
 
     async def scenario():
         await controller.play(query="a")
-        session = await controller.open_stream()
-        await session.chunks.__anext__()
-        await controller.play(query="b")  # pista nueva: nueva generación
-        rest = await asyncio.wait_for(drain(session.chunks), 1)
-        return rest
-
-    assert asyncio.run(scenario()) == []
-    assert spawn.processes[0].killed and spawn.running == 0
-
-
-def test_paused_stream_closes_when_stopped() -> None:
-    spawn = FakeSpawn([], endless=True)
-    controller, _, _, _ = make_controller(spawn=spawn)
-
-    async def scenario():
-        await controller.play(query="a")
-        session = await controller.open_stream()
-        await session.chunks.__anext__()
-        await controller.pause()
-        pending = asyncio.create_task(drain(session.chunks))
-        await asyncio.sleep(0)
-        await controller.stop()
-        return await asyncio.wait_for(pending, 1)
-
-    assert asyncio.run(scenario()) == []
-    assert spawn.running == 0
-
-
-def test_only_one_stream_is_active_when_the_device_reconnects() -> None:
-    spawn = FakeSpawn([], endless=True)
-    controller, _, _, _ = make_controller(spawn=spawn)
-
-    async def scenario():
-        await controller.play(query="a")
-        old = await controller.open_stream()
-        await old.chunks.__anext__()
-        new = await controller.open_stream()  # el ESP32 reconecta
-        old_rest = await asyncio.wait_for(drain(old.chunks), 1)
-        await new.chunks.__anext__()
+        await settle()
+        controller._extractor.results = [track(2)]
+        await controller.play(query="b")
+        await settle()
         running = spawn.running
-        await new.chunks.aclose()
-        return old_rest, running
+        await controller.close()
+        return running
 
-    old_rest, running_during_new = asyncio.run(scenario())
-    assert old_rest == []
-    assert running_during_new == 1  # nunca dos FFmpeg a la vez tras la reconexión
-    assert spawn.running == 0
+    assert asyncio.run(scenario()) == 1  # nunca dos FFmpeg a la vez
+    assert spawn.processes[0].killed
+    assert spawn.arg(1, "-i") == f"https://audio.example/{track(2).video_id}"
 
 
-def test_stream_error_midway_does_not_advance_the_queue() -> None:
-    controller, _, _, _ = make_controller(spawn=FakeSpawn([b"aa"], code=1))
+def test_switching_to_bluetooth_moves_the_song_without_restarting_it() -> None:
+    controller, _, spawn, _, clock = make_controller(sinks=[AUX_SINK, BT_SINK])
 
     async def scenario():
         await controller.play(query="a")
-        session = await controller.open_stream()
-        data = await drain(session.chunks)
-        return data, controller.snapshot()
+        await settle()
+        clock.now += 12
+        assert await controller.set_output("bluetooth") == BT_SINK
+        await settle()
+        snap = controller.snapshot()
+        await controller.close()
+        return snap
 
-    data, snap = asyncio.run(scenario())
-    assert data == [b"aa"]
-    assert snap.status == "playing" and snap.current == track(1)
+    snap = asyncio.run(scenario())
+    assert snap.output_mode == "bluetooth" and snap.sink == BT_SINK
+    assert spawn.arg(1, "-device") == BT_SINK and spawn.arg(1, "-ss") == "12.0"
 
 
-def test_device_disconnect_and_reconnect_are_tracked() -> None:
-    controller, _, _, clock = make_controller()
-    report = DeviceReport(device_id="esp32-sala", bluetooth_connected=True, bluetooth_sink="JBL")
+def test_unavailable_outputs_are_refused_without_changing_anything() -> None:
+    controller, _, spawn, outputs, _ = make_controller()
 
-    assert controller.snapshot().device_connected is False
-    controller.heartbeat(report)
-    snap = controller.snapshot()
-    assert snap.device_connected and snap.device == report and snap.device_reconnects == 0
+    async def scenario():
+        with pytest.raises(OutputUnavailableError) as info:
+            await controller.set_output("bluetooth")
+        assert info.value.reason == "el parlante Bluetooth no está conectado"
+        outputs.sinks = None  # servidor de sonido caído
+        with pytest.raises(OutputUnavailableError):
+            await controller.play(query="a")
+        return controller.snapshot()
 
-    clock.now += 16  # más que MUSIC_DEVICE_TIMEOUT_SECONDS (15)
-    snap = controller.snapshot()
-    assert not snap.device_connected and snap.device_last_seen_seconds == 16
+    snap = asyncio.run(scenario())
+    assert snap.output_mode == "aux" and snap.status == "idle" and snap.current is None
+    assert spawn.calls == []
 
-    clock.now += 1
-    controller.heartbeat(report)
-    snap = controller.snapshot()
-    assert snap.device_connected and snap.device_reconnects == 1
+
+def test_speaker_turned_off_midway_pauses_with_an_error() -> None:
+    controller, _, spawn, outputs, _ = make_controller(sinks=[AUX_SINK, BT_SINK])
+
+    async def scenario():
+        await controller.set_output("bluetooth")
+        await controller.play(query="a")
+        await settle()
+        outputs.sinks = [AUX_SINK]  # el parlante se apaga
+        spawn.processes[0].finish(1)
+        await settle()
+        snap = controller.snapshot()
+        await controller.close()
+        return snap
+
+    snap = asyncio.run(scenario())
+    assert snap.status == "paused" and snap.current == track(1)
+    assert snap.error == "sin salida de audio: el parlante Bluetooth no está conectado"
+    assert len(spawn.calls) == 1  # no reintenta en bucle
+
+
+def test_a_track_that_fails_is_skipped() -> None:
+    controller, _, spawn, _, _ = make_controller(spawn=FakeSpawn(exit_code=1, stderr=b"403 Forbidden"))
+
+    async def scenario():
+        await controller.enqueue(query="a")
+        controller._extractor.results = [track(2)]
+        await controller.enqueue(query="b")
+        await controller.play()
+        await settle()
+        snap = controller.snapshot()
+        await controller.close()
+        return snap
+
+    snap = asyncio.run(scenario())
+    # Las dos fallan: se saltan, la cola termina y queda el aviso de la última.
+    assert len(spawn.calls) == 2 and snap.status == "idle"
+    assert snap.error == "no se pudo reproducir «Canción 2»"
 
 
 def test_upstream_failure_in_search_propagates() -> None:
-    from app.core.exceptions import UpstreamServiceError
-
-    controller, _, _, _ = make_controller(extractor=FakeExtractor(error=UpstreamServiceError("yt-dlp", "x")))
+    controller, _, _, _, _ = make_controller(extractor=FakeExtractor(error=UpstreamServiceError("yt-dlp", "x")))
     with pytest.raises(UpstreamServiceError):
         asyncio.run(controller.play(query="a"))
     assert controller.snapshot().status == "idle"

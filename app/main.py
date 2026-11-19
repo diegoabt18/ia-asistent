@@ -37,7 +37,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Límite compartido por todas las peticiones: los servicios se crean por petición.
     app.state.verify_slots = asyncio.Semaphore(max(1, settings.verification_max_concurrent))
     app.state.model_slots = asyncio.Semaphore(max(1, settings.ollama_max_concurrent))
-    # Módulo de música: no abre procesos ni conexiones hasta que se usa.
+    # Módulo de música: no abre procesos ni conexiones hasta que se usa (el reproductor arranca con
+    # la primera orden de reproducir).
     app.state.music = MusicController(settings)
     try:
         yield

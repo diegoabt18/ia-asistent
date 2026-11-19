@@ -73,13 +73,10 @@ Swagger: http://127.0.0.1:8000/docs
 | GET | `/api/v1/music/tools` | Sí | Catálogo de herramientas de música (forma de `/select` + `module` y `permission`) |
 | POST | `/api/v1/music/commands` | Sí + usuario | Ejecuta un comando de música `{tool, args}` y responde con texto determinista y el estado |
 | GET | `/api/v1/music/search?q=...` | Sí + usuario | Busca canciones (yt-dlp) sin reproducirlas |
-| GET | `/api/v1/music/state` | Sí + usuario | Estado del reproductor, cola y ESP32 |
+| GET | `/api/v1/music/state` | Sí + usuario | Estado del reproductor, cola, posición y salida |
 | POST / DELETE | `/api/v1/music/queue` | Sí + usuario | Añade una canción (`query` o `video_id`) / vacía la cola |
-| GET | `/api/v1/music/device/ping` | Token ESP32 | Comprobación de conexión del ESP32 |
-| POST | `/api/v1/music/device/heartbeat` | Token ESP32 | Latido con el estado del ESP32; devuelve el del reproductor |
-| GET | `/api/v1/music/device/state` | Token ESP32 | Estado del reproductor |
-| GET | `/api/v1/music/device/stream` | Token ESP32 | Audio de la pista actual (MP3 o PCM); 204 si no hay nada |
-| POST | `/api/v1/music/device/control` | Token ESP32 | Botones físicos: `pause`, `resume`, `toggle`, `next`, `previous`, `stop` |
+| GET | `/api/v1/music/output` | Sí + usuario | Salida elegida y salidas que ofrece el host (503 si no hay servidor de sonido) |
+| PUT | `/api/v1/music/output` | Sí + usuario | Cambia la salida: `{"mode": "aux"}` o `{"mode": "bluetooth"}` (409 si no está disponible) |
 
 Autenticación: cabecera `X-API-Key: <tu clave>`. Si `API_KEY` está vacía, los endpoints protegidos responden 503.
 
@@ -104,9 +101,9 @@ curl -X POST -H "X-API-Key: TU_CLAVE" -H "Content-Type: application/json" \
   http://127.0.0.1:8000/api/v1/chat
 ```
 
-## Módulo de música (ESP32 + altavoz Bluetooth)
+## Módulo de música (suena en el servidor: cable auxiliar o Bluetooth)
 
-Busca canciones con yt-dlp, obtiene la URL de audio, la transcodifica con FFmpeg y la envía por HTTP a un ESP32 clásico, que la decodifica y la reproduce en un altavoz por Bluetooth A2DP (el firmware es un componente aparte). Está desactivado por defecto (`MUSIC_ENABLED=false`).
+Busca canciones con yt-dlp, obtiene la URL de audio y la reproduce con FFmpeg en el propio servidor. El sonido sale por el jack auxiliar (cable) o por un parlante Bluetooth emparejado con el servidor; se elige hablando con Lumi («pon la música por Bluetooth»). Está desactivado por defecto (`MUSIC_ENABLED=false`).
 
 Código en `app/services/music/`:
 
@@ -116,26 +113,79 @@ Código en `app/services/music/`:
 | `extract.py` | Único uso de yt-dlp: búsqueda (`ytsearchN:`) y URL de audio. Solo extractor de YouTube e IDs validados (sin SSRF) |
 | `search.py` | Reglas de búsqueda: límite de resultados y duración máxima |
 | `queue.py` | Cola con posición actual, anterior/siguiente, tamaño acotado |
-| `player.py` | Estado (`idle`/`playing`/`paused`, `generation`) y latidos del ESP32 |
-| `stream.py` | FFmpeg en subproceso → MP3 o PCM por trozos; se mata al desconectar |
-| `controller.py` | Coordina todo; una instancia por proceso (`app.state.music`) |
+| `player.py` | Estado (`idle`/`playing`/`paused`, `generation`) |
+| `output.py` | Salidas del host con `pactl`: elige el sink de `aux` o `bluetooth` |
+| `stream.py` | FFmpeg en subproceso que reproduce en un sink (`-f pulse`) |
+| `controller.py` | Coordina todo y mantiene el bucle de reproducción; una instancia por proceso (`app.state.music`) |
 | `commands.py` | Herramientas para el asistente: validación, permiso y texto de respuesta |
 
-**Asistente:** el servidor de Lumia obtiene el catálogo en `GET /music/tools`, lo añade a `/select` si el usuario tiene permiso (`music.read` para `search`, `current`, `device_status`; `music.control` para `play`, `pause`, `resume`, `next`, `previous`) y ejecuta lo que proponga el modelo con `POST /music/commands`. La respuesta es texto fijo, sin modelo. `MUSIC_CONTROL_USER_REFS` limita además quién puede controlar.
+**Asistente:** el servidor de Lumia obtiene el catálogo en `GET /music/tools`, lo añade a `/select` si el usuario tiene permiso (`music.read` para `search`, `current`, `output_status`; `music.control` para `play`, `pause`, `resume`, `next`, `previous`, `output`) y ejecuta lo que proponga el modelo con `POST /music/commands`. La respuesta es texto fijo, sin modelo. `MUSIC_CONTROL_USER_REFS` limita además quién puede controlar.
 
-**ESP32:** se autentica con `Authorization: Bearer <MUSIC_DEVICE_TOKEN>` y `X-Device-Id`. Envía un latido cada pocos segundos; si `generation` cambia, reabre `/device/stream`. En pausa el servidor deja de enviar audio sin cerrar la conexión; al cambiar de pista el stream termina. Solo hay un stream activo: abrir otro cierra el anterior.
+**Cómo suena:** un bucle en segundo plano mantiene un FFmpeg reproduciendo la pista actual en la salida elegida. Pausar o cambiar de salida termina ese FFmpeg y al reanudar se abre otro desde la misma posición (tarda uno o dos segundos en volver a sonar). Al terminar una pista pasa a la siguiente. Si la salida desaparece (parlante apagado), la música queda en pausa con el aviso en `error`; si una pista falla, se salta.
 
-**Red:** el contenedor no publica puertos. Para que el ESP32 llegue, define `MUSIC_DEVICE_BIND_ADDRESS` (IP de la LAN del host) en `.env` y arranca con:
+### Preparar el servidor (una sola vez)
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.music.yml up -d --build
-```
+El contenedor no usa la tarjeta de sonido ni el Bluetooth directamente: le pasa el audio al **servidor de sonido del host** (PipeWire en Ubuntu 22.10 o posterior, o PulseAudio). Estos pasos se hacen en el host, no en Docker.
 
-El puerto queda publicado solo en esa IP. Sirve toda la API, pero el resto de rutas siguen exigiendo `X-API-Key`.
+1. Comprueba que hay servidor de sonido y qué salidas tiene:
 
-**Recursos:** un solo FFmpeg a la vez, un hilo, trozos de `MUSIC_CHUNK_BYTES`. FFmpeg transcodifica al ritmo al que lee el ESP32 (contrapresión de TCP). MP3 a 128 kbps es lo recomendado: en el ESP32 clásico el Wi-Fi y el Bluetooth comparten radio y PCM (~1,4 Mbps) suele cortarse.
+   ```bash
+   pactl list short sinks
+   ```
 
-**Aviso legal:** descargar o retransmitir audio de YouTube con yt-dlp va contra los Términos de Servicio de YouTube y puede infringir derechos de autor. Úsalo solo para uso personal en tu red local, sin redistribuir. YouTube cambia a menudo y puede romper yt-dlp: actualiza su versión en `requirements.txt` cuando ocurra.
+   Si el comando no existe: `sudo apt install pulseaudio-utils`. Si dice *Connection refused*, instala PipeWire: `sudo apt install pipewire pipewire-pulse wireplumber`.
+
+2. Si el servidor no tiene sesión gráfica, deja que el sonido de tu usuario funcione sin iniciar sesión:
+
+   ```bash
+   sudo loginctl enable-linger $USER
+   ```
+
+3. **Cable auxiliar:** conecta el cable al jack verde (salida de línea o auriculares). En `pactl list short sinks` aparece como `alsa_output....analog-stereo`.
+
+4. **Bluetooth:** instala el soporte (`sudo apt install bluez libspa-0.2-bluetooth`), enciende el parlante en modo emparejamiento y en el host:
+
+   ```bash
+   bluetoothctl
+   power on
+   scan on            # espera a ver el nombre del parlante y copia su dirección (AA:BB:CC:...)
+   pair AA:BB:CC:DD:EE:FF
+   trust AA:BB:CC:DD:EE:FF
+   connect AA:BB:CC:DD:EE:FF
+   exit
+   ```
+
+   Con `trust`, el parlante se reconecta solo cuando lo enciendes. Conectado, aparece en `pactl list short sinks` como `bluez_output....`.
+
+   En un servidor sin sesión gráfica, WirePlumber puede no activar el Bluetooth (el parlante conecta, pero no aparece en `pactl`). Solución con WirePlumber 0.5 (`wireplumber --version`): crea `~/.config/wireplumber/wireplumber.conf.d/80-bluetooth-headless.conf` con
+
+   ```
+   wireplumber.profiles = { main = { monitor.bluez.seat-monitoring = disabled } }
+   ```
+
+   y reinicia con `systemctl --user restart wireplumber`.
+
+5. Activa la música en el `.env` y monta el sonido del host en el contenedor:
+
+   ```
+   MUSIC_ENABLED=true
+   COMPOSE_FILE=docker-compose.yml:docker-compose.music.yml
+   ```
+
+   Si tu usuario no tiene UID 1000 (`id -u`), añade también `MUSIC_PULSE_SOCKET=/run/user/<tu UID>/pulse/native`.
+
+6. Arranca como siempre y comprueba que el contenedor ve las salidas:
+
+   ```bash
+   docker compose up -d --build
+   docker compose exec api pactl list short sinks
+   ```
+
+Si hay varias salidas por cable (por ejemplo HDMI y analógica) y no elige la correcta, copia su nombre exacto en `MUSIC_AUX_SINK` (lo mismo con `MUSIC_BLUETOOTH_SINK`). Con PulseAudio clásico (no PipeWire), si sale *Access denied*, monta también la cookie de `~/.config/pulse/cookie` y define `PULSE_COOKIE`.
+
+**Recursos:** un solo FFmpeg a la vez, con un hilo, que descarga y decodifica al ritmo de la música. El volumen de la música es `MUSIC_VOLUME_PERCENT` sobre el del sistema.
+
+**Aviso legal:** descargar o reproducir audio de YouTube con yt-dlp va contra los Términos de Servicio de YouTube y puede infringir derechos de autor. Úsalo solo para uso personal en tu red local, sin redistribuir. YouTube cambia a menudo y puede romper yt-dlp: actualiza su versión en `requirements.txt` cuando ocurra.
 
 ## Cómo funciona la investigación (Fase 3)
 

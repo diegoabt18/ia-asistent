@@ -13,27 +13,23 @@ class TrackOut(BaseModel):
     duration_seconds: int | None = None
 
 
-class DeviceOut(BaseModel):
-    connected: bool
-    device_id: str | None = None
-    bluetooth_connected: bool = False
-    bluetooth_sink: str | None = None
-    wifi_rssi: int | None = None
-    buffer_ms: int | None = None
-    free_heap: int | None = None
-    firmware: str | None = None
-    last_seen_seconds: float | None = None
-    reconnects: int = 0
+class OutputOut(BaseModel):
+    # Salida elegida: "aux" (jack auxiliar) o "bluetooth".
+    mode: Literal["aux", "bluetooth"]
+    # Salida del servidor de sonido por la que suena ahora mismo (None si no suena nada).
+    sink: str | None = None
 
 
 class MusicStateOut(BaseModel):
     status: Literal["idle", "playing", "paused"]
-    # Cambia con cada pista nueva o al detener: el ESP32 reconecta el stream cuando cambia.
+    # Cambia con cada pista nueva o al detener.
     generation: int
     current: TrackOut | None
     upcoming: list[TrackOut]
-    streaming: bool
-    device: DeviceOut
+    position_seconds: int = 0
+    output: OutputOut
+    # Último problema de reproducción (salida no disponible, pista que no se pudo reproducir).
+    error: str | None = None
 
 
 class MusicSearchResponse(BaseModel):
@@ -63,7 +59,8 @@ class MusicCommandResponse(BaseModel):
     ok: bool
     # Texto determinista para el usuario (sin modelo).
     text: str
-    # Código del fallo cuando ok es false: not_found, nothing_playing, queue_full, upstream, forbidden.
+    # Código del fallo cuando ok es false: not_found, nothing_playing, queue_full,
+    # output_unavailable, invalid_output, upstream, forbidden.
     error: str | None = None
     tracks: list[TrackOut] = Field(default_factory=list)
     state: MusicStateOut
@@ -80,23 +77,12 @@ class QueueAddRequest(BaseModel):
         return self
 
 
-class HeartbeatRequest(BaseModel):
-    bluetooth_connected: bool = False
-    bluetooth_sink: str | None = Field(default=None, max_length=64)
-    wifi_rssi: int | None = Field(default=None, ge=-127, le=0)
-    buffer_ms: int | None = Field(default=None, ge=0, le=600_000)
-    free_heap: int | None = Field(default=None, ge=0)
-    firmware: str | None = Field(default=None, max_length=32)
+class OutputRequest(BaseModel):
+    mode: Literal["aux", "bluetooth"]
 
 
-class DeviceControlRequest(BaseModel):
-    """Botones físicos del ESP32."""
+class OutputsResponse(BaseModel):
+    """Salidas (sinks) que ofrece ahora el servidor de sonido del host."""
 
-    action: Literal["pause", "resume", "toggle", "next", "previous", "stop"]
-
-
-class DevicePingResponse(BaseModel):
-    ok: bool
-    device_id: str
-    generation: int
-    status: Literal["idle", "playing", "paused"]
+    mode: Literal["aux", "bluetooth"]
+    sinks: list[str]

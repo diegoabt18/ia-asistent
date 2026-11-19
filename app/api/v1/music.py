@@ -1,4 +1,4 @@
-"""Rutas de música para el servidor de Lumia (API key + X-User-Ref). Ver también music_device.py."""
+"""Rutas de música para el servidor de Lumia (API key + X-User-Ref). La música suena en este servidor."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
@@ -11,6 +11,8 @@ from app.schemas.music import (
     MusicSearchResponse,
     MusicStateOut,
     MusicToolSpec,
+    OutputRequest,
+    OutputsResponse,
     QueueAddRequest,
     TrackOut,
 )
@@ -21,8 +23,10 @@ from app.services.music.commands import (
     to_state,
     to_track,
     tool_specs,
+    unavailable_text,
 )
 from app.services.music.controller import MusicController, NothingToPlayError
+from app.services.music.output import OutputUnavailableError
 from app.services.music.queue import QueueFullError
 
 router = APIRouter(prefix="/music", tags=["music"], dependencies=[Depends(require_music_enabled)])
@@ -107,3 +111,27 @@ async def clear_queue(
     _require_control(settings, user_ref)
     await controller.clear()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/output", response_model=OutputsResponse)
+async def get_output(user_ref: UserRef, controller: MusicController = Depends(get_music_controller)) -> OutputsResponse:
+    try:
+        sinks = await controller.outputs()
+    except OutputUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=exc.reason) from exc
+    return OutputsResponse(mode=controller.snapshot().output_mode, sinks=sinks)
+
+
+@router.put("/output", response_model=MusicStateOut)
+async def set_output(
+    payload: OutputRequest,
+    user_ref: UserRef,
+    controller: MusicController = Depends(get_music_controller),
+    settings: Settings = Depends(get_settings),
+) -> MusicStateOut:
+    _require_control(settings, user_ref)
+    try:
+        await controller.set_output(payload.mode)
+    except OutputUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=unavailable_text(exc)) from exc
+    return to_state(controller.snapshot())

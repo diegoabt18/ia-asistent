@@ -6,9 +6,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# FFmpeg para el módulo de música (transcodificación a MP3/PCM). Sin paquetes recomendados.
+# Módulo de música: FFmpeg reproduce el audio y pactl (pulseaudio-utils) lista las salidas del host.
+# El sonido sale por el servidor de sonido del host (ver docker-compose.music.yml). Sin paquetes recomendados.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg pulseaudio-utils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -21,7 +22,6 @@ RUN useradd --uid 1000 --create-home appuser
 USER appuser
 
 # Sin puertos publicados: solo es accesible desde las redes Docker del compose (ver docker-compose.yml).
-# El ESP32 de música necesita docker-compose.music.yml, que publica el puerto solo en la IP de la LAN.
 # Un único proceso de uvicorn: el estado de la música vive en memoria del proceso.
 CMD ["sh", "-c", "uvicorn app.main:app --host ${API_HOST:-127.0.0.1} --port ${API_PORT:-8000}"]
 

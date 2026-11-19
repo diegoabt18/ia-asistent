@@ -3,71 +3,31 @@ import asyncio
 import pytest
 
 from app.core.exceptions import UpstreamServiceError
-from app.services.music.stream import PROTOCOL_WHITELIST, FfmpegTranscoder
+from app.services.music.output import AudioOutputs, OutputUnavailableError, parse_sinks, pick_sink
+from app.services.music.stream import PROTOCOL_WHITELIST, STREAM_NAME, FfmpegPlayer
 from app.services.music.types import AudioSource
-from music_fakes import FakeSpawn, music_settings
+from music_fakes import AUX_SINK, BT_SINK, FakeSpawn, music_settings
 
 SOURCE = AudioSource(url="https://audio.example/x", headers={"User-Agent": "ua"})
 
 
-async def collect(transcoder: FfmpegTranscoder, limit: int | None = None) -> list[bytes]:
-    out: list[bytes] = []
-    gen = transcoder.stream(SOURCE)
-    try:
-        async for chunk in gen:
-            out.append(chunk)
-            if limit is not None and len(out) >= limit:
-                break
-    finally:
-        await gen.aclose()
-    return out
-
-
-def test_mp3_arguments_restrict_protocols_and_use_one_thread() -> None:
-    args = FfmpegTranscoder(music_settings(music_bitrate_kbps=96)).build_args(SOURCE)
+def test_player_arguments_restrict_protocols_and_write_to_the_sink() -> None:
+    args = FfmpegPlayer(music_settings()).build_args(SOURCE, AUX_SINK)
     assert args[0] == "ffmpeg"
     assert args[args.index("-protocol_whitelist") + 1] == PROTOCOL_WHITELIST == "https,tls,tcp"
     assert args[args.index("-headers") + 1] == "User-Agent: ua\r\n"
     assert args[args.index("-i") + 1] == SOURCE.url
     assert args[args.index("-threads") + 1] == "1"
-    assert args[args.index("-b:a") + 1] == "96k" and args[args.index("-f") + 1] == "mp3"
-    assert args[-1] == "pipe:1"
+    assert args[args.index("-f") + 1] == "pulse" and args[args.index("-device") + 1] == AUX_SINK
+    assert args[args.index("-af") + 1] == "volume=0.80"  # MUSIC_VOLUME_PERCENT=80 por defecto
+    assert args[-1] == STREAM_NAME
+    assert "-ss" not in args
 
 
-def test_pcm_output_is_s16le_with_format_headers() -> None:
-    transcoder = FfmpegTranscoder(music_settings(music_output_format="pcm", music_sample_rate=48000))
-    args = transcoder.build_args(AudioSource(url="https://a.example/y"))
-    assert "-headers" not in args
-    assert args[args.index("-f") + 1] == "s16le" and args[args.index("-ar") + 1] == "48000"
-    assert transcoder.media_type == "application/octet-stream"
-    assert transcoder.audio_headers() == {
-        "X-Audio-Format": "pcm_s16le",
-        "X-Audio-Sample-Rate": "48000",
-        "X-Audio-Channels": "2",
-    }
-
-
-def test_stream_yields_chunks_of_bounded_size_and_reaps_the_process() -> None:
-    spawn = FakeSpawn([b"aaaa", b"bbbb", b"cc"])
-    chunks = asyncio.run(collect(FfmpegTranscoder(music_settings(music_chunk_bytes=4), spawn)))
-    assert chunks == [b"aaaa", b"bbbb", b"cc"]
-    proc = spawn.processes[0]
-    assert set(proc.stdout.read_sizes) == {4}  # memoria acotada por trozo
-    assert proc.returncode == 0 and not proc.killed
-
-
-def test_closing_the_stream_early_kills_ffmpeg() -> None:
-    spawn = FakeSpawn([], endless=True)
-    chunks = asyncio.run(collect(FfmpegTranscoder(music_settings(), spawn), limit=3))
-    assert len(chunks) == 3
-    assert spawn.processes[0].killed and spawn.running == 0
-
-
-def test_ffmpeg_failure_is_reported_as_upstream_error() -> None:
-    spawn = FakeSpawn([b"aa"], code=1, stderr=b"Server returned 403 Forbidden")
-    with pytest.raises(UpstreamServiceError) as info:
-        asyncio.run(collect(FfmpegTranscoder(music_settings(), spawn)))
-    assert info.value.service == "FFmpeg"
+def test_resume_seeks_before_the_input_and_full_volume_skips_the_filter() -> None:
+    args = FfmpegPlayer(music_settings(music_volume_percent=100)).build_args(SOURCE, BT_SINK, 42.37)
+    assert args.index("-ss") < args.index("-i") and args[args.index("-ss") + 1] == "42.4"
+    assert "-af" not in args
 
 
 def test_missing_ffmpeg_binary_is_reported_clearly() -> None:
@@ -75,5 +35,80 @@ def test_missing_ffmpeg_binary_is_reported_clearly() -> None:
         raise FileNotFoundError("ffmpeg")
 
     with pytest.raises(UpstreamServiceError) as info:
-        asyncio.run(collect(FfmpegTranscoder(music_settings(), missing)))
+        asyncio.run(FfmpegPlayer(music_settings(), missing).start(SOURCE, AUX_SINK))
     assert "no está instalado" in info.value.detail
+
+
+def test_stop_kills_a_running_process() -> None:
+    spawn = FakeSpawn()
+
+    async def scenario():
+        player = FfmpegPlayer(music_settings(), spawn)
+        proc = await player.start(SOURCE, AUX_SINK)
+        await player.stop(proc)
+        return proc
+
+    proc = asyncio.run(scenario())
+    assert proc.killed and spawn.running == 0
+
+
+# --- Salidas -----------------------------------------------------------------------------------
+
+HDMI_SINK = "alsa_output.pci-0000_01_00.1.hdmi-stereo"
+PACTL = (
+    f"0\t{AUX_SINK}\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n"
+    f"1\t{HDMI_SINK}\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n"
+    f"2\t{BT_SINK}\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n"
+)
+
+
+def test_parse_sinks_reads_the_name_column() -> None:
+    assert parse_sinks(PACTL + "\nbasura\n") == [AUX_SINK, HDMI_SINK, BT_SINK]
+
+
+def test_pick_sink_auto_and_configured() -> None:
+    sinks = [HDMI_SINK, AUX_SINK, BT_SINK]
+    assert pick_sink("bluetooth", sinks, "") == BT_SINK
+    assert pick_sink("aux", sinks, "") == AUX_SINK  # prefiere la analógica a HDMI
+    assert pick_sink("aux", [HDMI_SINK, BT_SINK], "") == HDMI_SINK
+    assert pick_sink("bluetooth", [AUX_SINK], "") is None
+    assert pick_sink("aux", sinks, HDMI_SINK) == HDMI_SINK
+    assert pick_sink("aux", sinks, "no-existe") is None
+
+
+class PactlProcess:
+    def __init__(self, stdout: bytes, code: int = 0) -> None:
+        self.stdout = stdout
+        self.returncode = code
+
+    async def communicate(self):
+        return self.stdout, b"Connection refused"
+
+
+def pactl(stdout: bytes, code: int = 0):
+    calls = []
+
+    async def spawn(*args, **kwargs):
+        calls.append(args)
+        return PactlProcess(stdout, code)
+
+    return spawn, calls
+
+
+def test_outputs_resolve_with_pactl() -> None:
+    spawn, calls = pactl(PACTL.encode())
+    outputs = AudioOutputs(music_settings(), spawn)
+    assert asyncio.run(outputs.resolve("bluetooth")) == BT_SINK
+    assert calls[0] == ("pactl", "list", "short", "sinks")
+
+
+def test_outputs_report_missing_bluetooth_and_dead_sound_server() -> None:
+    spawn, _ = pactl(f"0\t{AUX_SINK}\tPipeWire\tx\tIDLE\n".encode())
+    with pytest.raises(OutputUnavailableError) as info:
+        asyncio.run(AudioOutputs(music_settings(), spawn).resolve("bluetooth"))
+    assert info.value.mode == "bluetooth" and "no está conectado" in info.value.reason
+
+    dead, _ = pactl(b"", code=1)
+    with pytest.raises(OutputUnavailableError) as info:
+        asyncio.run(AudioOutputs(music_settings(), dead).resolve("aux"))
+    assert "servidor de sonido" in info.value.reason
